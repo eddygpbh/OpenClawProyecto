@@ -4,7 +4,6 @@ services:
     runtime: docker
     plan: starter
     healthCheckPath: /health
-    healthCheckInterval: 300
     dockerfilePath: ./Dockerfile
     envVars:
       - key: PORT
