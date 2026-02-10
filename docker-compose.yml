@@ -1,4 +1,4 @@
-services:
+services:xxxx
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     environment:
