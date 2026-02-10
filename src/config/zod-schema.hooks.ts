@@ -16,6 +16,7 @@ export const HookMappingSchema = z
     messageTemplate: z.string().optional(),
     textTemplate: z.string().optional(),
     deliver: z.boolean().optional(),
+    allowUnsafeExternalContent: z.boolean().optional(),
     channel: z
       .union([
         z.literal("last"),
@@ -37,22 +38,26 @@ export const HookMappingSchema = z
         module: z.string(),
         export: z.string().optional(),
       })
+      .strict()
       .optional(),
   })
+  .strict()
   .optional();
 
-export const InternalHookHandlerSchema = z.object({
-  event: z.string(),
-  module: z.string(),
-  export: z.string().optional(),
-});
+export const InternalHookHandlerSchema = z
+  .object({
+    event: z.string(),
+    module: z.string(),
+    export: z.string().optional(),
+  })
+  .strict();
 
 const HookConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
     env: z.record(z.string(), z.string()).optional(),
   })
-  .passthrough();
+  .strict();
 
 const HookInstallRecordSchema = z
   .object({
@@ -64,7 +69,7 @@ const HookInstallRecordSchema = z
     installedAt: z.string().optional(),
     hooks: z.array(z.string()).optional(),
   })
-  .passthrough();
+  .strict();
 
 export const InternalHooksSchema = z
   .object({
@@ -75,9 +80,11 @@ export const InternalHooksSchema = z
       .object({
         extraDirs: z.array(z.string()).optional(),
       })
+      .strict()
       .optional(),
     installs: z.record(z.string(), HookInstallRecordSchema).optional(),
   })
+  .strict()
   .optional();
 
 export const HooksGmailSchema = z
@@ -91,12 +98,14 @@ export const HooksGmailSchema = z
     includeBody: z.boolean().optional(),
     maxBytes: z.number().int().positive().optional(),
     renewEveryMinutes: z.number().int().positive().optional(),
+    allowUnsafeExternalContent: z.boolean().optional(),
     serve: z
       .object({
         bind: z.string().optional(),
         port: z.number().int().positive().optional(),
         path: z.string().optional(),
       })
+      .strict()
       .optional(),
     tailscale: z
       .object({
@@ -104,6 +113,7 @@ export const HooksGmailSchema = z
         path: z.string().optional(),
         target: z.string().optional(),
       })
+      .strict()
       .optional(),
     model: z.string().optional(),
     thinking: z
@@ -116,4 +126,5 @@ export const HooksGmailSchema = z
       ])
       .optional(),
   })
+  .strict()
   .optional();

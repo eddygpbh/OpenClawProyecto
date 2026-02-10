@@ -1,7 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-
-import type { ClawdbotConfig, MemorySearchConfig } from "../config/config.js";
+import type { OpenClawConfig, MemorySearchConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { clampInt, clampNumber, resolveUserPath } from "../utils.js";
 import { resolveAgentConfig } from "./agent-scope.js";
@@ -9,7 +8,8 @@ import { resolveAgentConfig } from "./agent-scope.js";
 export type ResolvedMemorySearchConfig = {
   enabled: boolean;
   sources: Array<"memory" | "sessions">;
-  provider: "openai" | "local" | "gemini" | "auto";
+  extraPaths: string[];
+  provider: "openai" | "local" | "gemini" | "voyage" | "auto";
   remote?: {
     baseUrl?: string;
     apiKey?: string;
@@ -25,7 +25,7 @@ export type ResolvedMemorySearchConfig = {
   experimental: {
     sessionMemory: boolean;
   };
-  fallback: "openai" | "gemini" | "local" | "none";
+  fallback: "openai" | "gemini" | "local" | "voyage" | "none";
   model: string;
   local: {
     modelPath?: string;
@@ -49,6 +49,10 @@ export type ResolvedMemorySearchConfig = {
     watch: boolean;
     watchDebounceMs: number;
     intervalMinutes: number;
+    sessions: {
+      deltaBytes: number;
+      deltaMessages: number;
+    };
   };
   query: {
     maxResults: number;
@@ -68,9 +72,12 @@ export type ResolvedMemorySearchConfig = {
 
 const DEFAULT_OPENAI_MODEL = "text-embedding-3-small";
 const DEFAULT_GEMINI_MODEL = "gemini-embedding-001";
+const DEFAULT_VOYAGE_MODEL = "voyage-4-large";
 const DEFAULT_CHUNK_TOKENS = 400;
 const DEFAULT_CHUNK_OVERLAP = 80;
 const DEFAULT_WATCH_DEBOUNCE_MS = 1500;
+const DEFAULT_SESSION_DELTA_BYTES = 100_000;
+const DEFAULT_SESSION_DELTA_MESSAGES = 50;
 const DEFAULT_MAX_RESULTS = 6;
 const DEFAULT_MIN_SCORE = 0.35;
 const DEFAULT_HYBRID_ENABLED = true;
@@ -87,17 +94,25 @@ function normalizeSources(
   const normalized = new Set<"memory" | "sessions">();
   const input = sources?.length ? sources : DEFAULT_SOURCES;
   for (const source of input) {
-    if (source === "memory") normalized.add("memory");
-    if (source === "sessions" && sessionMemoryEnabled) normalized.add("sessions");
+    if (source === "memory") {
+      normalized.add("memory");
+    }
+    if (source === "sessions" && sessionMemoryEnabled) {
+      normalized.add("sessions");
+    }
   }
-  if (normalized.size === 0) normalized.add("memory");
+  if (normalized.size === 0) {
+    normalized.add("memory");
+  }
   return Array.from(normalized);
 }
 
 function resolveStorePath(agentId: string, raw?: string): string {
   const stateDir = resolveStateDir(process.env, os.homedir);
   const fallback = path.join(stateDir, "memory", `${agentId}.sqlite`);
-  if (!raw) return fallback;
+  if (!raw) {
+    return fallback;
+  }
   const withToken = raw.includes("{agentId}") ? raw.replaceAll("{agentId}", agentId) : raw;
   return resolveUserPath(withToken);
 }
@@ -113,11 +128,22 @@ function mergeConfig(
   const provider = overrides?.provider ?? defaults?.provider ?? "auto";
   const defaultRemote = defaults?.remote;
   const overrideRemote = overrides?.remote;
-  const hasRemote = Boolean(defaultRemote || overrideRemote);
+  const hasRemoteConfig = Boolean(
+    overrideRemote?.baseUrl ||
+    overrideRemote?.apiKey ||
+    overrideRemote?.headers ||
+    defaultRemote?.baseUrl ||
+    defaultRemote?.apiKey ||
+    defaultRemote?.headers,
+  );
   const includeRemote =
-    hasRemote || provider === "openai" || provider === "gemini" || provider === "auto";
+    hasRemoteConfig ||
+    provider === "openai" ||
+    provider === "gemini" ||
+    provider === "voyage" ||
+    provider === "auto";
   const batch = {
-    enabled: overrideRemote?.batch?.enabled ?? defaultRemote?.batch?.enabled ?? true,
+    enabled: overrideRemote?.batch?.enabled ?? defaultRemote?.batch?.enabled ?? false,
     wait: overrideRemote?.batch?.wait ?? defaultRemote?.batch?.wait ?? true,
     concurrency: Math.max(
       1,
@@ -142,13 +168,19 @@ function mergeConfig(
       ? DEFAULT_GEMINI_MODEL
       : provider === "openai"
         ? DEFAULT_OPENAI_MODEL
-        : undefined;
+        : provider === "voyage"
+          ? DEFAULT_VOYAGE_MODEL
+          : undefined;
   const model = overrides?.model ?? defaults?.model ?? modelDefault ?? "";
   const local = {
     modelPath: overrides?.local?.modelPath ?? defaults?.local?.modelPath,
     modelCacheDir: overrides?.local?.modelCacheDir ?? defaults?.local?.modelCacheDir,
   };
   const sources = normalizeSources(overrides?.sources ?? defaults?.sources, sessionMemory);
+  const rawPaths = [...(defaults?.extraPaths ?? []), ...(overrides?.extraPaths ?? [])]
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const extraPaths = Array.from(new Set(rawPaths));
   const vector = {
     enabled: overrides?.store?.vector?.enabled ?? defaults?.store?.vector?.enabled ?? true,
     extensionPath:
@@ -172,6 +204,16 @@ function mergeConfig(
       defaults?.sync?.watchDebounceMs ??
       DEFAULT_WATCH_DEBOUNCE_MS,
     intervalMinutes: overrides?.sync?.intervalMinutes ?? defaults?.sync?.intervalMinutes ?? 0,
+    sessions: {
+      deltaBytes:
+        overrides?.sync?.sessions?.deltaBytes ??
+        defaults?.sync?.sessions?.deltaBytes ??
+        DEFAULT_SESSION_DELTA_BYTES,
+      deltaMessages:
+        overrides?.sync?.sessions?.deltaMessages ??
+        defaults?.sync?.sessions?.deltaMessages ??
+        DEFAULT_SESSION_DELTA_MESSAGES,
+    },
   };
   const query = {
     maxResults: overrides?.query?.maxResults ?? defaults?.query?.maxResults ?? DEFAULT_MAX_RESULTS,
@@ -208,9 +250,12 @@ function mergeConfig(
   const normalizedVectorWeight = sum > 0 ? vectorWeight / sum : DEFAULT_HYBRID_VECTOR_WEIGHT;
   const normalizedTextWeight = sum > 0 ? textWeight / sum : DEFAULT_HYBRID_TEXT_WEIGHT;
   const candidateMultiplier = clampInt(hybrid.candidateMultiplier, 1, 20);
+  const deltaBytes = clampInt(sync.sessions.deltaBytes, 0, Number.MAX_SAFE_INTEGER);
+  const deltaMessages = clampInt(sync.sessions.deltaMessages, 0, Number.MAX_SAFE_INTEGER);
   return {
     enabled,
     sources,
+    extraPaths,
     provider,
     remote,
     experimental: {
@@ -221,7 +266,13 @@ function mergeConfig(
     local,
     store,
     chunking: { tokens: Math.max(1, chunking.tokens), overlap },
-    sync,
+    sync: {
+      ...sync,
+      sessions: {
+        deltaBytes,
+        deltaMessages,
+      },
+    },
     query: {
       ...query,
       minScore,
@@ -243,12 +294,14 @@ function mergeConfig(
 }
 
 export function resolveMemorySearchConfig(
-  cfg: ClawdbotConfig,
+  cfg: OpenClawConfig,
   agentId: string,
 ): ResolvedMemorySearchConfig | null {
   const defaults = cfg.agents?.defaults?.memorySearch;
   const overrides = resolveAgentConfig(cfg, agentId)?.memorySearch;
   const resolved = mergeConfig(defaults, overrides, agentId);
-  if (!resolved.enabled) return null;
+  if (!resolved.enabled) {
+    return null;
+  }
   return resolved;
 }

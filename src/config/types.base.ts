@@ -1,9 +1,9 @@
-import type { NormalizedChatType } from "../channels/chat-type.js";
+import type { ChatType } from "../channels/chat-type.js";
 
 export type ReplyMode = "text" | "command";
 export type TypingMode = "never" | "instant" | "thinking" | "message";
 export type SessionScope = "per-sender" | "global";
-export type DmScope = "main" | "per-peer" | "per-channel-peer";
+export type DmScope = "main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer";
 export type ReplyToMode = "off" | "first" | "all";
 export type GroupPolicy = "open" | "disabled" | "allowlist";
 export type DmPolicy = "pairing" | "allowlist" | "open" | "disabled";
@@ -31,6 +31,13 @@ export type BlockStreamingChunkConfig = {
   breakPreference?: "paragraph" | "newline" | "sentence";
 };
 
+export type MarkdownTableMode = "off" | "bullets" | "code";
+
+export type MarkdownConfig = {
+  /** Table rendering mode (off|bullets|code). */
+  tables?: MarkdownTableMode;
+};
+
 export type HumanDelayConfig = {
   /** Delay style for block replies (off|natural|custom). */
   mode?: "off" | "natural" | "custom";
@@ -43,7 +50,7 @@ export type HumanDelayConfig = {
 export type SessionSendPolicyAction = "allow" | "deny";
 export type SessionSendPolicyMatch = {
   channel?: string;
-  chatType?: NormalizedChatType;
+  chatType?: ChatType;
   keyPrefix?: string;
 };
 export type SessionSendPolicyRule = {
@@ -64,6 +71,8 @@ export type SessionResetConfig = {
   idleMinutes?: number;
 };
 export type SessionResetByTypeConfig = {
+  direct?: SessionResetConfig;
+  /** @deprecated Use `direct` instead. Kept for backward compatibility. */
   dm?: SessionResetConfig;
   group?: SessionResetConfig;
   thread?: SessionResetConfig;
@@ -77,9 +86,10 @@ export type SessionConfig = {
   identityLinks?: Record<string, string[]>;
   resetTriggers?: string[];
   idleMinutes?: number;
-  heartbeatIdleMinutes?: number;
   reset?: SessionResetConfig;
   resetByType?: SessionResetByTypeConfig;
+  /** Channel-specific reset overrides (e.g. { discord: { mode: "idle", idleMinutes: 10080 } }). */
+  resetByChannel?: Record<string, SessionResetConfig>;
   store?: string;
   typingIntervalSeconds?: number;
   typingMode?: TypingMode;
@@ -89,6 +99,23 @@ export type SessionConfig = {
     /** Max ping-pong turns between requester/target (0–5). Default: 5. */
     maxPingPongTurns?: number;
   };
+  /** Automatic session store maintenance (pruning, capping, file rotation). */
+  maintenance?: SessionMaintenanceConfig;
+};
+
+export type SessionMaintenanceMode = "enforce" | "warn";
+
+export type SessionMaintenanceConfig = {
+  /** Whether to enforce maintenance or warn only. Default: "warn". */
+  mode?: SessionMaintenanceMode;
+  /** Remove session entries older than this duration (e.g. "30d", "12h"). Default: "30d". */
+  pruneAfter?: string | number;
+  /** Deprecated. Use pruneAfter instead. */
+  pruneDays?: number;
+  /** Maximum number of session entries to keep. Default: 500. */
+  maxEntries?: number;
+  /** Rotate sessions.json when it exceeds this size (e.g. "10mb"). Default: 10mb. */
+  rotateBytes?: number | string;
 };
 
 export type LoggingConfig = {
@@ -100,6 +127,37 @@ export type LoggingConfig = {
   redactSensitive?: "off" | "tools";
   /** Regex patterns used to redact sensitive tokens (defaults apply when unset). */
   redactPatterns?: string[];
+};
+
+export type DiagnosticsOtelConfig = {
+  enabled?: boolean;
+  endpoint?: string;
+  protocol?: "http/protobuf" | "grpc";
+  headers?: Record<string, string>;
+  serviceName?: string;
+  traces?: boolean;
+  metrics?: boolean;
+  logs?: boolean;
+  /** Trace sample rate (0.0 - 1.0). */
+  sampleRate?: number;
+  /** Metric export interval (ms). */
+  flushIntervalMs?: number;
+};
+
+export type DiagnosticsCacheTraceConfig = {
+  enabled?: boolean;
+  filePath?: string;
+  includeMessages?: boolean;
+  includePrompt?: boolean;
+  includeSystem?: boolean;
+};
+
+export type DiagnosticsConfig = {
+  enabled?: boolean;
+  /** Optional ad-hoc diagnostics flags (e.g. "telegram.http"). */
+  flags?: string[];
+  otel?: DiagnosticsOtelConfig;
+  cacheTrace?: DiagnosticsCacheTraceConfig;
 };
 
 export type WebReconnectConfig = {
@@ -124,4 +182,6 @@ export type IdentityConfig = {
   name?: string;
   theme?: string;
   emoji?: string;
+  /** Avatar image: workspace-relative path, http(s) URL, or data URI. */
+  avatar?: string;
 };

@@ -1,6 +1,7 @@
-import { resolveApiKeyForProvider } from "../agents/model-auth.js";
-import { createSubsystemLogger } from "../logging.js";
 import type { EmbeddingProvider, EmbeddingProviderOptions } from "./embeddings.js";
+import { requireApiKey, resolveApiKeyForProvider } from "../agents/model-auth.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 
 export type GeminiEmbeddingClient = {
   baseUrl: string;
@@ -11,18 +12,22 @@ export type GeminiEmbeddingClient = {
 
 const DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 export const DEFAULT_GEMINI_EMBEDDING_MODEL = "gemini-embedding-001";
-const debugEmbeddings = process.env.CLAWDBOT_DEBUG_MEMORY_EMBEDDINGS === "1";
+const debugEmbeddings = isTruthyEnvValue(process.env.OPENCLAW_DEBUG_MEMORY_EMBEDDINGS);
 const log = createSubsystemLogger("memory/embeddings");
 
 const debugLog = (message: string, meta?: Record<string, unknown>) => {
-  if (!debugEmbeddings) return;
+  if (!debugEmbeddings) {
+    return;
+  }
   const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
   log.raw(`${message}${suffix}`);
 };
 
 function resolveRemoteApiKey(remoteApiKey?: string): string | undefined {
   const trimmed = remoteApiKey?.trim();
-  if (!trimmed) return undefined;
+  if (!trimmed) {
+    return undefined;
+  }
   if (trimmed === "GOOGLE_API_KEY" || trimmed === "GEMINI_API_KEY") {
     return process.env[trimmed]?.trim();
   }
@@ -31,17 +36,25 @@ function resolveRemoteApiKey(remoteApiKey?: string): string | undefined {
 
 function normalizeGeminiModel(model: string): string {
   const trimmed = model.trim();
-  if (!trimmed) return DEFAULT_GEMINI_EMBEDDING_MODEL;
+  if (!trimmed) {
+    return DEFAULT_GEMINI_EMBEDDING_MODEL;
+  }
   const withoutPrefix = trimmed.replace(/^models\//, "");
-  if (withoutPrefix.startsWith("gemini/")) return withoutPrefix.slice("gemini/".length);
-  if (withoutPrefix.startsWith("google/")) return withoutPrefix.slice("google/".length);
+  if (withoutPrefix.startsWith("gemini/")) {
+    return withoutPrefix.slice("gemini/".length);
+  }
+  if (withoutPrefix.startsWith("google/")) {
+    return withoutPrefix.slice("google/".length);
+  }
   return withoutPrefix;
 }
 
 function normalizeGeminiBaseUrl(raw: string): string {
   const trimmed = raw.replace(/\/+$/, "");
   const openAiIndex = trimmed.indexOf("/openai");
-  if (openAiIndex > -1) return trimmed.slice(0, openAiIndex);
+  if (openAiIndex > -1) {
+    return trimmed.slice(0, openAiIndex);
+  }
   return trimmed;
 }
 
@@ -58,7 +71,9 @@ export async function createGeminiEmbeddingProvider(
   const batchUrl = `${baseUrl}/${client.modelPath}:batchEmbedContents`;
 
   const embedQuery = async (text: string): Promise<number[]> => {
-    if (!text.trim()) return [];
+    if (!text.trim()) {
+      return [];
+    }
     const res = await fetch(embedUrl, {
       method: "POST",
       headers: client.headers,
@@ -76,7 +91,9 @@ export async function createGeminiEmbeddingProvider(
   };
 
   const embedBatch = async (texts: string[]): Promise<number[][]> => {
-    if (texts.length === 0) return [];
+    if (texts.length === 0) {
+      return [];
+    }
     const requests = texts.map((text) => ({
       model: client.modelPath,
       content: { parts: [{ text }] },
@@ -114,13 +131,16 @@ export async function resolveGeminiEmbeddingClient(
   const remoteApiKey = resolveRemoteApiKey(remote?.apiKey);
   const remoteBaseUrl = remote?.baseUrl?.trim();
 
-  const { apiKey } = remoteApiKey
-    ? { apiKey: remoteApiKey }
-    : await resolveApiKeyForProvider({
-        provider: "google",
-        cfg: options.config,
-        agentDir: options.agentDir,
-      });
+  const apiKey = remoteApiKey
+    ? remoteApiKey
+    : requireApiKey(
+        await resolveApiKeyForProvider({
+          provider: "google",
+          cfg: options.config,
+          agentDir: options.agentDir,
+        }),
+        "google",
+      );
 
   const providerConfig = options.config.models?.providers?.google;
   const rawBaseUrl = remoteBaseUrl || providerConfig?.baseUrl?.trim() || DEFAULT_GEMINI_BASE_URL;

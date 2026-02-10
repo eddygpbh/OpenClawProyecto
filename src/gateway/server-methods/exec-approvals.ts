@@ -1,3 +1,4 @@
+import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import {
   ensureExecApprovals,
   normalizeExecApprovals,
@@ -17,11 +18,12 @@ import {
   validateExecApprovalsSetParams,
 } from "../protocol/index.js";
 import { respondUnavailableOnThrow, safeParseJson } from "./nodes.helpers.js";
-import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 
 function resolveBaseHash(params: unknown): string | null {
   const raw = (params as { baseHash?: unknown })?.baseHash;
-  if (typeof raw !== "string") return null;
+  if (typeof raw !== "string") {
+    return null;
+  }
   const trimmed = raw.trim();
   return trimmed ? trimmed : null;
 }
@@ -31,7 +33,9 @@ function requireApprovalsBaseHash(
   snapshot: ExecApprovalsSnapshot,
   respond: RespondFn,
 ): boolean {
-  if (!snapshot.exists) return true;
+  if (!snapshot.exists) {
+    return true;
+  }
   if (!snapshot.hash) {
     respond(
       false,
@@ -167,11 +171,6 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const bridge = context.bridge;
-    if (!bridge) {
-      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "bridge not running"));
-      return;
-    }
     const { nodeId } = params as { nodeId: string };
     const id = nodeId.trim();
     if (!id) {
@@ -179,10 +178,10 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
       return;
     }
     await respondUnavailableOnThrow(respond, async () => {
-      const res = await bridge.invoke({
+      const res = await context.nodeRegistry.invoke({
         nodeId: id,
         command: "system.execApprovals.get",
-        paramsJSON: "{}",
+        params: {},
       });
       if (!res.ok) {
         respond(
@@ -194,7 +193,7 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const payload = safeParseJson(res.payloadJSON ?? null);
+      const payload = res.payloadJSON ? safeParseJson(res.payloadJSON) : res.payload;
       respond(true, payload, undefined);
     });
   },
@@ -210,11 +209,6 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const bridge = context.bridge;
-    if (!bridge) {
-      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "bridge not running"));
-      return;
-    }
     const { nodeId, file, baseHash } = params as {
       nodeId: string;
       file: ExecApprovalsFile;
@@ -226,10 +220,10 @@ export const execApprovalsHandlers: GatewayRequestHandlers = {
       return;
     }
     await respondUnavailableOnThrow(respond, async () => {
-      const res = await bridge.invoke({
+      const res = await context.nodeRegistry.invoke({
         nodeId: id,
         command: "system.execApprovals.set",
-        paramsJSON: JSON.stringify({ file, baseHash }),
+        params: { file, baseHash },
       });
       if (!res.ok) {
         respond(

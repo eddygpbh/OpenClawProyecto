@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-
 import type { CliDeps } from "../cli/deps.js";
-import type { ClawdbotConfig } from "../config/config.js";
-import type { RuntimeEnv } from "../runtime.js";
+import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
+import type { RuntimeEnv } from "../runtime.js";
 
 const mocks = vi.hoisted(() => ({
   deliverOutboundPayloads: vi.fn(async () => []),
@@ -37,7 +36,7 @@ describe("deliverAgentCommandResult", () => {
   });
 
   it("prefers explicit accountId for outbound delivery", async () => {
-    const cfg = {} as ClawdbotConfig;
+    const cfg = {} as OpenClawConfig;
     const deps = {} as CliDeps;
     const runtime = {
       log: vi.fn(),
@@ -74,7 +73,7 @@ describe("deliverAgentCommandResult", () => {
   });
 
   it("falls back to session accountId for implicit delivery", async () => {
-    const cfg = {} as ClawdbotConfig;
+    const cfg = {} as OpenClawConfig;
     const deps = {} as CliDeps;
     const runtime = {
       log: vi.fn(),
@@ -110,7 +109,7 @@ describe("deliverAgentCommandResult", () => {
   });
 
   it("does not infer accountId for explicit delivery targets", async () => {
-    const cfg = {} as ClawdbotConfig;
+    const cfg = {} as OpenClawConfig;
     const deps = {} as CliDeps;
     const runtime = {
       log: vi.fn(),
@@ -150,7 +149,7 @@ describe("deliverAgentCommandResult", () => {
   });
 
   it("skips session accountId when channel differs", async () => {
-    const cfg = {} as ClawdbotConfig;
+    const cfg = {} as OpenClawConfig;
     const deps = {} as CliDeps;
     const runtime = {
       log: vi.fn(),
@@ -186,7 +185,7 @@ describe("deliverAgentCommandResult", () => {
   });
 
   it("uses session last channel when none is provided", async () => {
-    const cfg = {} as ClawdbotConfig;
+    const cfg = {} as OpenClawConfig;
     const deps = {} as CliDeps;
     const runtime = {
       log: vi.fn(),
@@ -220,8 +219,48 @@ describe("deliverAgentCommandResult", () => {
     );
   });
 
+  it("uses reply overrides for delivery routing", async () => {
+    const cfg = {} as OpenClawConfig;
+    const deps = {} as CliDeps;
+    const runtime = {
+      log: vi.fn(),
+      error: vi.fn(),
+    } as unknown as RuntimeEnv;
+    const sessionEntry = {
+      lastChannel: "telegram",
+      lastTo: "123",
+      lastAccountId: "legacy",
+    } as SessionEntry;
+    const result = {
+      payloads: [{ text: "hi" }],
+      meta: {},
+    };
+
+    const { deliverAgentCommandResult } = await import("./agent/delivery.js");
+    await deliverAgentCommandResult({
+      cfg,
+      deps,
+      runtime,
+      opts: {
+        message: "hello",
+        deliver: true,
+        to: "+15551234567",
+        replyTo: "#reports",
+        replyChannel: "slack",
+        replyAccountId: "ops",
+      },
+      sessionEntry,
+      result,
+      payloads: result.payloads,
+    });
+
+    expect(mocks.resolveOutboundTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "slack", to: "#reports", accountId: "ops" }),
+    );
+  });
+
   it("prefixes nested agent outputs with context", async () => {
-    const cfg = {} as ClawdbotConfig;
+    const cfg = {} as OpenClawConfig;
     const deps = {} as CliDeps;
     const runtime = {
       log: vi.fn(),

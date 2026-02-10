@@ -13,12 +13,12 @@ vi.mock("../../plugins/install.js", () => ({
 }));
 
 vi.mock("../../plugins/loader.js", () => ({
-  loadClawdbotPlugins: vi.fn(),
+  loadOpenClawPlugins: vi.fn(),
 }));
 
 import fs from "node:fs";
 import type { ChannelPluginCatalogEntry } from "../../channels/plugins/catalog.js";
-import type { ClawdbotConfig } from "../../config/config.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import type { WizardPrompter } from "../../wizard/prompts.js";
 import { makePrompter, makeRuntime } from "./__tests__/test-utils.js";
 import { ensureOnboardingPluginInstalled } from "./plugin-install.js";
@@ -34,7 +34,7 @@ const baseEntry: ChannelPluginCatalogEntry = {
     blurb: "Test",
   },
   install: {
-    npmSpec: "@clawdbot/zalo",
+    npmSpec: "@openclaw/zalo",
     localPath: "extensions/zalo",
   },
 };
@@ -49,7 +49,7 @@ describe("ensureOnboardingPluginInstalled", () => {
     const prompter = makePrompter({
       select: vi.fn(async () => "npm") as WizardPrompter["select"],
     });
-    const cfg: ClawdbotConfig = { plugins: { allow: ["other"] } };
+    const cfg: OpenClawConfig = { plugins: { allow: ["other"] } };
     vi.mocked(fs.existsSync).mockReturnValue(false);
     installPluginFromNpmSpec.mockResolvedValue({
       ok: true,
@@ -69,10 +69,10 @@ describe("ensureOnboardingPluginInstalled", () => {
     expect(result.cfg.plugins?.entries?.zalo?.enabled).toBe(true);
     expect(result.cfg.plugins?.allow).toContain("zalo");
     expect(result.cfg.plugins?.installs?.zalo?.source).toBe("npm");
-    expect(result.cfg.plugins?.installs?.zalo?.spec).toBe("@clawdbot/zalo");
+    expect(result.cfg.plugins?.installs?.zalo?.spec).toBe("@openclaw/zalo");
     expect(result.cfg.plugins?.installs?.zalo?.installPath).toBe("/tmp/zalo");
     expect(installPluginFromNpmSpec).toHaveBeenCalledWith(
-      expect.objectContaining({ spec: "@clawdbot/zalo" }),
+      expect.objectContaining({ spec: "@openclaw/zalo" }),
     );
   });
 
@@ -81,7 +81,7 @@ describe("ensureOnboardingPluginInstalled", () => {
     const prompter = makePrompter({
       select: vi.fn(async () => "local") as WizardPrompter["select"],
     });
-    const cfg: ClawdbotConfig = {};
+    const cfg: OpenClawConfig = {};
     vi.mocked(fs.existsSync).mockImplementation((value) => {
       const raw = String(value);
       return (
@@ -102,6 +102,52 @@ describe("ensureOnboardingPluginInstalled", () => {
     expect(result.cfg.plugins?.entries?.zalo?.enabled).toBe(true);
   });
 
+  it("defaults to local on dev channel when local path exists", async () => {
+    const runtime = makeRuntime();
+    const select = vi.fn(async () => "skip") as WizardPrompter["select"];
+    const prompter = makePrompter({ select });
+    const cfg: OpenClawConfig = { update: { channel: "dev" } };
+    vi.mocked(fs.existsSync).mockImplementation((value) => {
+      const raw = String(value);
+      return (
+        raw.endsWith(`${path.sep}.git`) || raw.endsWith(`${path.sep}extensions${path.sep}zalo`)
+      );
+    });
+
+    await ensureOnboardingPluginInstalled({
+      cfg,
+      entry: baseEntry,
+      prompter,
+      runtime,
+    });
+
+    const firstCall = select.mock.calls[0]?.[0];
+    expect(firstCall?.initialValue).toBe("local");
+  });
+
+  it("defaults to npm on beta channel even when local path exists", async () => {
+    const runtime = makeRuntime();
+    const select = vi.fn(async () => "skip") as WizardPrompter["select"];
+    const prompter = makePrompter({ select });
+    const cfg: OpenClawConfig = { update: { channel: "beta" } };
+    vi.mocked(fs.existsSync).mockImplementation((value) => {
+      const raw = String(value);
+      return (
+        raw.endsWith(`${path.sep}.git`) || raw.endsWith(`${path.sep}extensions${path.sep}zalo`)
+      );
+    });
+
+    await ensureOnboardingPluginInstalled({
+      cfg,
+      entry: baseEntry,
+      prompter,
+      runtime,
+    });
+
+    const firstCall = select.mock.calls[0]?.[0];
+    expect(firstCall?.initialValue).toBe("npm");
+  });
+
   it("falls back to local path after npm install failure", async () => {
     const runtime = makeRuntime();
     const note = vi.fn(async () => {});
@@ -111,7 +157,7 @@ describe("ensureOnboardingPluginInstalled", () => {
       note,
       confirm,
     });
-    const cfg: ClawdbotConfig = {};
+    const cfg: OpenClawConfig = {};
     vi.mocked(fs.existsSync).mockImplementation((value) => {
       const raw = String(value);
       return (

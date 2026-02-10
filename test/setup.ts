@@ -1,19 +1,24 @@
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, vi } from "vitest";
+
+// Ensure Vitest environment is properly set
+process.env.VITEST = "true";
 
 import type {
   ChannelId,
   ChannelOutboundAdapter,
   ChannelPlugin,
 } from "../src/channels/plugins/types.js";
-import type { ClawdbotConfig } from "../src/config/config.js";
+import type { OpenClawConfig } from "../src/config/config.js";
 import type { OutboundSendDeps } from "../src/infra/outbound/deliver.js";
+import { installProcessWarningFilter } from "../src/infra/warning-filter.js";
 import { setActivePluginRegistry } from "../src/plugins/runtime.js";
 import { createTestRegistry } from "../src/test-utils/channel-plugins.js";
-import { installTestEnv } from "./test-env";
+import { withIsolatedTestHome } from "./test-env.js";
 
-const { cleanup } = installTestEnv();
-process.on("exit", cleanup);
+installProcessWarningFilter();
 
+const testEnv = withIsolatedTestHome();
+afterAll(() => testEnv.cleanup());
 const pickSendFn = (id: ChannelId, deps?: OutboundSendDeps) => {
   switch (id) {
     case "discord":
@@ -41,7 +46,8 @@ const createStubOutbound = (
   sendText: async ({ deps, to, text }) => {
     const send = pickSendFn(id, deps);
     if (send) {
-      const result = await send(to, text, {});
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const result = await send(to, text, { verbose: false } as any);
       return { channel: id, ...result };
     }
     return { channel: id, messageId: "test" };
@@ -49,7 +55,8 @@ const createStubOutbound = (
   sendMedia: async ({ deps, to, text, mediaUrl }) => {
     const send = pickSendFn(id, deps);
     if (send) {
-      const result = await send(to, text, { mediaUrl });
+      // oxlint-disable-next-line typescript/no-explicit-any
+      const result = await send(to, text, { verbose: false, mediaUrl } as any);
       return { channel: id, ...result };
     }
     return { channel: id, messageId: "test" };
@@ -75,23 +82,27 @@ const createStubPlugin = (params: {
   },
   capabilities: { chatTypes: ["direct", "group"] },
   config: {
-    listAccountIds: (cfg: ClawdbotConfig) => {
+    listAccountIds: (cfg: OpenClawConfig) => {
       const channels = cfg.channels as Record<string, unknown> | undefined;
       const entry = channels?.[params.id];
-      if (!entry || typeof entry !== "object") return [];
+      if (!entry || typeof entry !== "object") {
+        return [];
+      }
       const accounts = (entry as { accounts?: Record<string, unknown> }).accounts;
       const ids = accounts ? Object.keys(accounts).filter(Boolean) : [];
       return ids.length > 0 ? ids : ["default"];
     },
-    resolveAccount: (cfg: ClawdbotConfig, accountId: string) => {
+    resolveAccount: (cfg: OpenClawConfig, accountId?: string | null) => {
       const channels = cfg.channels as Record<string, unknown> | undefined;
       const entry = channels?.[params.id];
-      if (!entry || typeof entry !== "object") return {};
+      if (!entry || typeof entry !== "object") {
+        return {};
+      }
       const accounts = (entry as { accounts?: Record<string, unknown> }).accounts;
-      const match = accounts?.[accountId];
+      const match = accountId ? accounts?.[accountId] : undefined;
       return (match && typeof match === "object") || typeof match === "string" ? match : entry;
     },
-    isConfigured: async (_account, cfg: ClawdbotConfig) => {
+    isConfigured: async (_account, cfg: OpenClawConfig) => {
       const channels = cfg.channels as Record<string, unknown> | undefined;
       return Boolean(channels?.[params.id]);
     },

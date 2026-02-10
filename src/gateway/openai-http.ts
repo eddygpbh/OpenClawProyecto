@@ -1,18 +1,25 @@
-import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-
+import { randomUUID } from "node:crypto";
 import { buildHistoryContextFromEntries, type HistoryEntry } from "../auto-reply/reply/history.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommand } from "../commands/agent.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
-import { buildAgentMainSessionKey, normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { authorizeGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
-import { readJsonBody } from "./hooks.js";
+import {
+  readJsonBodyOrError,
+  sendJson,
+  sendMethodNotAllowed,
+  sendUnauthorized,
+  setSseHeaders,
+  writeDone,
+} from "./http-common.js";
+import { getBearerToken, resolveAgentIdForRequest, resolveSessionKey } from "./http-utils.js";
 
 type OpenAiHttpOptions = {
   auth: ResolvedGatewayAuth;
   maxBodyBytes?: number;
+  trustedProxies?: string[];
 };
 
 type OpenAiChatMessage = {
@@ -28,32 +35,8 @@ type OpenAiChatCompletionRequest = {
   user?: unknown;
 };
 
-function sendJson(res: ServerResponse, status: number, body: unknown) {
-  res.statusCode = status;
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  res.end(JSON.stringify(body));
-}
-
-function getHeader(req: IncomingMessage, name: string): string | undefined {
-  const raw = req.headers[name.toLowerCase()];
-  if (typeof raw === "string") return raw;
-  if (Array.isArray(raw)) return raw[0];
-  return undefined;
-}
-
-function getBearerToken(req: IncomingMessage): string | undefined {
-  const raw = getHeader(req, "authorization")?.trim() ?? "";
-  if (!raw.toLowerCase().startsWith("bearer ")) return undefined;
-  const token = raw.slice(7).trim();
-  return token || undefined;
-}
-
 function writeSse(res: ServerResponse, data: unknown) {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
-}
-
-function writeDone(res: ServerResponse) {
-  res.write("data: [DONE]\n\n");
 }
 
 function asMessages(val: unknown): OpenAiChatMessage[] {
@@ -61,17 +44,27 @@ function asMessages(val: unknown): OpenAiChatMessage[] {
 }
 
 function extractTextContent(content: unknown): string {
-  if (typeof content === "string") return content;
+  if (typeof content === "string") {
+    return content;
+  }
   if (Array.isArray(content)) {
     return content
       .map((part) => {
-        if (!part || typeof part !== "object") return "";
+        if (!part || typeof part !== "object") {
+          return "";
+        }
         const type = (part as { type?: unknown }).type;
         const text = (part as { text?: unknown }).text;
         const inputText = (part as { input_text?: unknown }).input_text;
-        if (type === "text" && typeof text === "string") return text;
-        if (type === "input_text" && typeof text === "string") return text;
-        if (typeof inputText === "string") return inputText;
+        if (type === "text" && typeof text === "string") {
+          return text;
+        }
+        if (type === "input_text" && typeof text === "string") {
+          return text;
+        }
+        if (typeof inputText === "string") {
+          return inputText;
+        }
         return "";
       })
       .filter(Boolean)
@@ -91,10 +84,14 @@ function buildAgentPrompt(messagesUnknown: unknown): {
     [];
 
   for (const msg of messages) {
-    if (!msg || typeof msg !== "object") continue;
+    if (!msg || typeof msg !== "object") {
+      continue;
+    }
     const role = typeof msg.role === "string" ? msg.role.trim() : "";
     const content = extractTextContent(msg.content).trim();
-    if (!role || !content) continue;
+    if (!role || !content) {
+      continue;
+    }
     if (role === "system" || role === "developer") {
       systemParts.push(content);
       continue;
@@ -131,7 +128,9 @@ function buildAgentPrompt(messagesUnknown: unknown): {
         break;
       }
     }
-    if (currentIndex < 0) currentIndex = conversationEntries.length - 1;
+    if (currentIndex < 0) {
+      currentIndex = conversationEntries.length - 1;
+    }
     const currentEntry = conversationEntries[currentIndex]?.entry;
     if (currentEntry) {
       const historyEntries = conversationEntries.slice(0, currentIndex).map((entry) => entry.entry);
@@ -154,54 +153,18 @@ function buildAgentPrompt(messagesUnknown: unknown): {
   };
 }
 
-function resolveAgentIdFromHeader(req: IncomingMessage): string | undefined {
-  const raw =
-    getHeader(req, "x-clawdbot-agent-id")?.trim() ||
-    getHeader(req, "x-clawdbot-agent")?.trim() ||
-    "";
-  if (!raw) return undefined;
-  return normalizeAgentId(raw);
-}
-
-function resolveAgentIdFromModel(model: string | undefined): string | undefined {
-  const raw = model?.trim();
-  if (!raw) return undefined;
-
-  const m =
-    raw.match(/^clawdbot[:/](?<agentId>[a-z0-9][a-z0-9_-]{0,63})$/i) ??
-    raw.match(/^agent:(?<agentId>[a-z0-9][a-z0-9_-]{0,63})$/i);
-  const agentId = m?.groups?.agentId;
-  if (!agentId) return undefined;
-  return normalizeAgentId(agentId);
-}
-
-function resolveAgentIdForRequest(params: {
-  req: IncomingMessage;
-  model: string | undefined;
-}): string {
-  const fromHeader = resolveAgentIdFromHeader(params.req);
-  if (fromHeader) return fromHeader;
-
-  const fromModel = resolveAgentIdFromModel(params.model);
-  return fromModel ?? "main";
-}
-
-function resolveSessionKey(params: {
+function resolveOpenAiSessionKey(params: {
   req: IncomingMessage;
   agentId: string;
   user?: string | undefined;
 }): string {
-  const explicit = getHeader(params.req, "x-clawdbot-session-key")?.trim();
-  if (explicit) return explicit;
-
-  // Default: stateless per-request session key, but stable if OpenAI "user" is provided.
-  const user = params.user?.trim();
-  const mainKey = user ? `openai-user:${user}` : `openai:${randomUUID()}`;
-  return buildAgentMainSessionKey({ agentId: params.agentId, mainKey });
+  return resolveSessionKey({ ...params, prefix: "openai" });
 }
 
 function coerceRequest(val: unknown): OpenAiChatCompletionRequest {
-  if (!val || typeof val !== "object") return {};
+  if (!val || typeof val !== "object") {
+    return {};
+  }
   return val as OpenAiChatCompletionRequest;
 }
 
@@ -211,13 +174,12 @@ export async function handleOpenAiHttpRequest(
   opts: OpenAiHttpOptions,
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
-  if (url.pathname !== "/v1/chat/completions") return false;
+  if (url.pathname !== "/v1/chat/completions") {
+    return false;
+  }
 
   if (req.method !== "POST") {
-    res.statusCode = 405;
-    res.setHeader("Allow", "POST");
-    res.setHeader("Content-Type", "text/plain; charset=utf-8");
-    res.end("Method Not Allowed");
+    sendMethodNotAllowed(res);
     return true;
   }
 
@@ -226,29 +188,25 @@ export async function handleOpenAiHttpRequest(
     auth: opts.auth,
     connectAuth: { token, password: token },
     req,
+    trustedProxies: opts.trustedProxies,
   });
   if (!authResult.ok) {
-    sendJson(res, 401, {
-      error: { message: "Unauthorized", type: "unauthorized" },
-    });
+    sendUnauthorized(res);
     return true;
   }
 
-  const body = await readJsonBody(req, opts.maxBodyBytes ?? 1024 * 1024);
-  if (!body.ok) {
-    sendJson(res, 400, {
-      error: { message: body.error, type: "invalid_request_error" },
-    });
+  const body = await readJsonBodyOrError(req, res, opts.maxBodyBytes ?? 1024 * 1024);
+  if (body === undefined) {
     return true;
   }
 
-  const payload = coerceRequest(body.value);
+  const payload = coerceRequest(body);
   const stream = Boolean(payload.stream);
-  const model = typeof payload.model === "string" ? payload.model : "clawdbot";
+  const model = typeof payload.model === "string" ? payload.model : "openclaw";
   const user = typeof payload.user === "string" ? payload.user : undefined;
 
   const agentId = resolveAgentIdForRequest({ req, model });
-  const sessionKey = resolveSessionKey({ req, agentId, user });
+  const sessionKey = resolveOpenAiSessionKey({ req, agentId, user });
   const prompt = buildAgentPrompt(payload.messages);
   if (!prompt.message) {
     sendJson(res, 400, {
@@ -286,7 +244,7 @@ export async function handleOpenAiHttpRequest(
               .map((p) => (typeof p.text === "string" ? p.text : ""))
               .filter(Boolean)
               .join("\n\n")
-          : "No response from Clawdbot.";
+          : "No response from OpenClaw.";
 
       sendJson(res, 200, {
         id: runId,
@@ -310,25 +268,27 @@ export async function handleOpenAiHttpRequest(
     return true;
   }
 
-  res.statusCode = 200;
-  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.flushHeaders?.();
+  setSseHeaders(res);
 
   let wroteRole = false;
   let sawAssistantDelta = false;
   let closed = false;
 
   const unsubscribe = onAgentEvent((evt) => {
-    if (evt.runId !== runId) return;
-    if (closed) return;
+    if (evt.runId !== runId) {
+      return;
+    }
+    if (closed) {
+      return;
+    }
 
     if (evt.stream === "assistant") {
       const delta = evt.data?.delta;
       const text = evt.data?.text;
       const content = typeof delta === "string" ? delta : typeof text === "string" ? text : "";
-      if (!content) return;
+      if (!content) {
+        return;
+      }
 
       if (!wroteRole) {
         wroteRole = true;
@@ -390,7 +350,9 @@ export async function handleOpenAiHttpRequest(
         deps,
       );
 
-      if (closed) return;
+      if (closed) {
+        return;
+      }
 
       if (!sawAssistantDelta) {
         if (!wroteRole) {
@@ -411,7 +373,7 @@ export async function handleOpenAiHttpRequest(
                 .map((p) => (typeof p.text === "string" ? p.text : ""))
                 .filter(Boolean)
                 .join("\n\n")
-            : "No response from Clawdbot.";
+            : "No response from OpenClaw.";
 
         sawAssistantDelta = true;
         writeSse(res, {
@@ -429,7 +391,9 @@ export async function handleOpenAiHttpRequest(
         });
       }
     } catch (err) {
-      if (closed) return;
+      if (closed) {
+        return;
+      }
       writeSse(res, {
         id: runId,
         object: "chat.completion.chunk",

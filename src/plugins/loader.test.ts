@@ -3,25 +3,43 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-
-import { loadClawdbotPlugins } from "./loader.js";
+import { loadOpenClawPlugins } from "./loader.js";
 
 type TempPlugin = { dir: string; file: string; id: string };
 
 const tempDirs: string[] = [];
-const prevBundledDir = process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR;
+const prevBundledDir = process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
+const EMPTY_PLUGIN_SCHEMA = { type: "object", additionalProperties: false, properties: {} };
 
 function makeTempDir() {
-  const dir = path.join(os.tmpdir(), `clawdbot-plugin-${randomUUID()}`);
+  const dir = path.join(os.tmpdir(), `openclaw-plugin-${randomUUID()}`);
   fs.mkdirSync(dir, { recursive: true });
   tempDirs.push(dir);
   return dir;
 }
 
-function writePlugin(params: { id: string; body: string }): TempPlugin {
-  const dir = makeTempDir();
-  const file = path.join(dir, `${params.id}.js`);
+function writePlugin(params: {
+  id: string;
+  body: string;
+  dir?: string;
+  filename?: string;
+}): TempPlugin {
+  const dir = params.dir ?? makeTempDir();
+  const filename = params.filename ?? `${params.id}.js`;
+  const file = path.join(dir, filename);
   fs.writeFileSync(file, params.body, "utf-8");
+  fs.writeFileSync(
+    path.join(dir, "openclaw.plugin.json"),
+    JSON.stringify(
+      {
+        id: params.id,
+        configSchema: EMPTY_PLUGIN_SCHEMA,
+      },
+      null,
+      2,
+    ),
+    "utf-8",
+  );
   return { dir, file, id: params.id };
 }
 
@@ -34,20 +52,24 @@ afterEach(() => {
     }
   }
   if (prevBundledDir === undefined) {
-    delete process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR;
+    delete process.env.OPENCLAW_BUNDLED_PLUGINS_DIR;
   } else {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = prevBundledDir;
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = prevBundledDir;
   }
 });
 
-describe("loadClawdbotPlugins", () => {
+describe("loadOpenClawPlugins", () => {
   it("disables bundled plugins by default", () => {
     const bundledDir = makeTempDir();
-    const bundledPath = path.join(bundledDir, "bundled.ts");
-    fs.writeFileSync(bundledPath, "export default function () {}", "utf-8");
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = bundledDir;
+    writePlugin({
+      id: "bundled",
+      body: `export default { id: "bundled", register() {} };`,
+      dir: bundledDir,
+      filename: "bundled.ts",
+    });
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -59,7 +81,7 @@ describe("loadClawdbotPlugins", () => {
     const bundled = registry.plugins.find((entry) => entry.id === "bundled");
     expect(bundled?.status).toBe("disabled");
 
-    const enabledRegistry = loadClawdbotPlugins({
+    const enabledRegistry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -75,17 +97,63 @@ describe("loadClawdbotPlugins", () => {
     expect(enabled?.status).toBe("loaded");
   });
 
+  it("loads bundled telegram plugin when enabled", () => {
+    const bundledDir = makeTempDir();
+    writePlugin({
+      id: "telegram",
+      body: `export default { id: "telegram", register(api) {
+  api.registerChannel({
+    plugin: {
+      id: "telegram",
+      meta: {
+        id: "telegram",
+        label: "Telegram",
+        selectionLabel: "Telegram",
+        docsPath: "/channels/telegram",
+        blurb: "telegram channel"
+      },
+      capabilities: { chatTypes: ["direct"] },
+      config: {
+        listAccountIds: () => [],
+        resolveAccount: () => ({ accountId: "default" })
+      },
+      outbound: { deliveryMode: "direct" }
+    }
+  });
+} };`,
+      dir: bundledDir,
+      filename: "telegram.ts",
+    });
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
+
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      config: {
+        plugins: {
+          allow: ["telegram"],
+          entries: {
+            telegram: { enabled: true },
+          },
+        },
+      },
+    });
+
+    const telegram = registry.plugins.find((entry) => entry.id === "telegram");
+    expect(telegram?.status).toBe("loaded");
+    expect(registry.channels.some((entry) => entry.plugin.id === "telegram")).toBe(true);
+  });
+
   it("enables bundled memory plugin when selected by slot", () => {
     const bundledDir = makeTempDir();
-    const bundledPath = path.join(bundledDir, "memory-core.ts");
-    fs.writeFileSync(
-      bundledPath,
-      'export default { id: "memory-core", kind: "memory", register() {} };',
-      "utf-8",
-    );
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = bundledDir;
+    writePlugin({
+      id: "memory-core",
+      body: `export default { id: "memory-core", kind: "memory", register() {} };`,
+      dir: bundledDir,
+      filename: "memory-core.ts",
+    });
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -108,22 +176,23 @@ describe("loadClawdbotPlugins", () => {
     fs.writeFileSync(
       path.join(pluginDir, "package.json"),
       JSON.stringify({
-        name: "@clawdbot/memory-core",
+        name: "@openclaw/memory-core",
         version: "1.2.3",
         description: "Memory plugin package",
-        clawdbot: { extensions: ["./index.ts"] },
+        openclaw: { extensions: ["./index.ts"] },
       }),
       "utf-8",
     );
-    fs.writeFileSync(
-      path.join(pluginDir, "index.ts"),
-      'export default { id: "memory-core", kind: "memory", name: "Memory (Core)", register() {} };',
-      "utf-8",
-    );
+    writePlugin({
+      id: "memory-core",
+      body: `export default { id: "memory-core", kind: "memory", name: "Memory (Core)", register() {} };`,
+      dir: pluginDir,
+      filename: "index.ts",
+    });
 
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = bundledDir;
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -141,13 +210,13 @@ describe("loadClawdbotPlugins", () => {
     expect(memory?.version).toBe("1.2.3");
   });
   it("loads plugins from config paths", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const plugin = writePlugin({
       id: "allowed",
-      body: `export default function (api) { api.registerGatewayMethod("allowed.ping", ({ respond }) => respond(true, { ok: true })); }`,
+      body: `export default { id: "allowed", register(api) { api.registerGatewayMethod("allowed.ping", ({ respond }) => respond(true, { ok: true })); } };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       workspaceDir: plugin.dir,
       config: {
@@ -164,13 +233,13 @@ describe("loadClawdbotPlugins", () => {
   });
 
   it("denylist disables plugins even if allowed", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const plugin = writePlugin({
       id: "blocked",
-      body: `export default function () {}`,
+      body: `export default { id: "blocked", register() {} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       workspaceDir: plugin.dir,
       config: {
@@ -187,13 +256,13 @@ describe("loadClawdbotPlugins", () => {
   });
 
   it("fails fast on invalid plugin config", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const plugin = writePlugin({
       id: "configurable",
-      body: `export default {\n  id: "configurable",\n  configSchema: {\n    parse(value) {\n      if (!value || typeof value !== "object" || Array.isArray(value)) {\n        throw new Error("bad config");\n      }\n      return value;\n    }\n  },\n  register() {}\n};`,
+      body: `export default { id: "configurable", register() {} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       workspaceDir: plugin.dir,
       config: {
@@ -214,10 +283,10 @@ describe("loadClawdbotPlugins", () => {
   });
 
   it("registers channel plugins", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const plugin = writePlugin({
       id: "channel-demo",
-      body: `export default function (api) {
+      body: `export default { id: "channel-demo", register(api) {
   api.registerChannel({
     plugin: {
       id: "demo",
@@ -236,10 +305,10 @@ describe("loadClawdbotPlugins", () => {
       outbound: { deliveryMode: "direct" }
     }
   });
-};`,
+} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       workspaceDir: plugin.dir,
       config: {
@@ -255,15 +324,15 @@ describe("loadClawdbotPlugins", () => {
   });
 
   it("registers http handlers", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const plugin = writePlugin({
       id: "http-demo",
-      body: `export default function (api) {
+      body: `export default { id: "http-demo", register(api) {
   api.registerHttpHandler(async () => false);
-};`,
+} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       workspaceDir: plugin.dir,
       config: {
@@ -280,14 +349,41 @@ describe("loadClawdbotPlugins", () => {
     expect(httpPlugin?.httpHandlers).toBe(1);
   });
 
-  it("respects explicit disable in config", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+  it("registers http routes", () => {
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const plugin = writePlugin({
-      id: "config-disable",
-      body: `export default function () {}`,
+      id: "http-route-demo",
+      body: `export default { id: "http-route-demo", register(api) {
+  api.registerHttpRoute({ path: "/demo", handler: async (_req, res) => { res.statusCode = 200; res.end("ok"); } });
+} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
+      cache: false,
+      workspaceDir: plugin.dir,
+      config: {
+        plugins: {
+          load: { paths: [plugin.file] },
+          allow: ["http-route-demo"],
+        },
+      },
+    });
+
+    const route = registry.httpRoutes.find((entry) => entry.pluginId === "http-route-demo");
+    expect(route).toBeDefined();
+    expect(route?.path).toBe("/demo");
+    const httpPlugin = registry.plugins.find((entry) => entry.id === "http-route-demo");
+    expect(httpPlugin?.httpHandlers).toBe(1);
+  });
+
+  it("respects explicit disable in config", () => {
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    const plugin = writePlugin({
+      id: "config-disable",
+      body: `export default { id: "config-disable", register() {} };`,
+    });
+
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -304,7 +400,7 @@ describe("loadClawdbotPlugins", () => {
   });
 
   it("enforces memory slot selection", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const memoryA = writePlugin({
       id: "memory-a",
       body: `export default { id: "memory-a", kind: "memory", register() {} };`,
@@ -314,7 +410,7 @@ describe("loadClawdbotPlugins", () => {
       body: `export default { id: "memory-b", kind: "memory", register() {} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -331,13 +427,13 @@ describe("loadClawdbotPlugins", () => {
   });
 
   it("disables memory plugins when slot is none", () => {
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = "/nonexistent/bundled/plugins";
     const memory = writePlugin({
       id: "memory-off",
       body: `export default { id: "memory-off", kind: "memory", register() {} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {
@@ -353,15 +449,20 @@ describe("loadClawdbotPlugins", () => {
 
   it("prefers higher-precedence plugins with the same id", () => {
     const bundledDir = makeTempDir();
-    fs.writeFileSync(path.join(bundledDir, "shadow.js"), "export default function () {}", "utf-8");
-    process.env.CLAWDBOT_BUNDLED_PLUGINS_DIR = bundledDir;
+    writePlugin({
+      id: "shadow",
+      body: `export default { id: "shadow", register() {} };`,
+      dir: bundledDir,
+      filename: "shadow.js",
+    });
+    process.env.OPENCLAW_BUNDLED_PLUGINS_DIR = bundledDir;
 
     const override = writePlugin({
       id: "shadow",
-      body: `export default function () {}`,
+      body: `export default { id: "shadow", register() {} };`,
     });
 
-    const registry = loadClawdbotPlugins({
+    const registry = loadOpenClawPlugins({
       cache: false,
       config: {
         plugins: {

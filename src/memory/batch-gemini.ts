@@ -1,5 +1,6 @@
-import { createSubsystemLogger } from "../logging.js";
 import type { GeminiEmbeddingClient } from "./embeddings-gemini.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hashText } from "./internal.js";
 
 export type GeminiBatchRequest = {
@@ -33,11 +34,13 @@ export type GeminiBatchOutputLine = {
 };
 
 const GEMINI_BATCH_MAX_REQUESTS = 50000;
-const debugEmbeddings = process.env.CLAWDBOT_DEBUG_MEMORY_EMBEDDINGS === "1";
+const debugEmbeddings = isTruthyEnvValue(process.env.OPENCLAW_DEBUG_MEMORY_EMBEDDINGS);
 const log = createSubsystemLogger("memory/embeddings");
 
 const debugLog = (message: string, meta?: Record<string, unknown>) => {
-  if (!debugEmbeddings) return;
+  if (!debugEmbeddings) {
+    return;
+  }
   const suffix = meta ? ` ${JSON.stringify(meta)}` : "";
   log.raw(`${message}${suffix}`);
 };
@@ -70,7 +73,9 @@ function getGeminiUploadUrl(baseUrl: string): string {
 }
 
 function splitGeminiBatchRequests(requests: GeminiBatchRequest[]): GeminiBatchRequest[][] {
-  if (requests.length <= GEMINI_BATCH_MAX_REQUESTS) return [requests];
+  if (requests.length <= GEMINI_BATCH_MAX_REQUESTS) {
+    return [requests];
+  }
   const groups: GeminiBatchRequest[][] = [];
   for (let i = 0; i < requests.length; i += GEMINI_BATCH_MAX_REQUESTS) {
     groups.push(requests.slice(i, i + GEMINI_BATCH_MAX_REQUESTS));
@@ -82,7 +87,7 @@ function buildGeminiUploadBody(params: { jsonl: string; displayName: string }): 
   body: Blob;
   contentType: string;
 } {
-  const boundary = `clawdbot-${hashText(params.displayName)}`;
+  const boundary = `openclaw-${hashText(params.displayName)}`;
   const jsonPart = JSON.stringify({
     file: {
       displayName: params.displayName,
@@ -183,7 +188,9 @@ async function fetchGeminiBatchStatus(params: {
   batchName: string;
 }): Promise<GeminiBatchStatus> {
   const baseUrl = getGeminiBaseUrl(params.gemini);
-  const name = params.batchName.startsWith("batches/") ? params.batchName : `batches/${params.batchName}`;
+  const name = params.batchName.startsWith("batches/")
+    ? params.batchName
+    : `batches/${params.batchName}`;
   const statusUrl = `${baseUrl}/${name}`;
   debugLog("memory embeddings: gemini batch status", { statusUrl });
   const res = await fetch(statusUrl, {
@@ -215,7 +222,9 @@ async function fetchGeminiFileContent(params: {
 }
 
 function parseGeminiBatchOutput(text: string): GeminiBatchOutputLine[] {
-  if (!text.trim()) return [];
+  if (!text.trim()) {
+    return [];
+  }
   return text
     .split("\n")
     .map((line) => line.trim())
@@ -269,7 +278,9 @@ async function waitForGeminiBatch(params: {
 }
 
 async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, limit: number): Promise<T[]> {
-  if (tasks.length === 0) return [];
+  if (tasks.length === 0) {
+    return [];
+  }
   const resolvedLimit = Math.max(1, Math.min(limit, tasks.length));
   const results: T[] = Array.from({ length: tasks.length });
   let next = 0;
@@ -277,10 +288,14 @@ async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, limit: numb
 
   const workers = Array.from({ length: resolvedLimit }, async () => {
     while (true) {
-      if (firstError) return;
+      if (firstError) {
+        return;
+      }
       const index = next;
       next += 1;
-      if (index >= tasks.length) return;
+      if (index >= tasks.length) {
+        return;
+      }
       try {
         results[index] = await tasks[index]();
       } catch (err) {
@@ -291,7 +306,9 @@ async function runWithConcurrency<T>(tasks: Array<() => Promise<T>>, limit: numb
   });
 
   await Promise.allSettled(workers);
-  if (firstError) throw firstError;
+  if (firstError) {
+    throw firstError;
+  }
   return results;
 }
 
@@ -305,7 +322,9 @@ export async function runGeminiEmbeddingBatches(params: {
   concurrency: number;
   debug?: (message: string, data?: Record<string, unknown>) => void;
 }): Promise<Map<string, number[]>> {
-  if (params.requests.length === 0) return new Map();
+  if (params.requests.length === 0) {
+    return new Map();
+  }
   const groups = splitGeminiBatchRequests(params.requests);
   const byCustomId = new Map<string, number[]>();
 
@@ -328,7 +347,11 @@ export async function runGeminiEmbeddingBatches(params: {
       requests: group.length,
     });
 
-    if (!params.wait && batchInfo.state && !["SUCCEEDED", "COMPLETED", "DONE"].includes(batchInfo.state)) {
+    if (
+      !params.wait &&
+      batchInfo.state &&
+      !["SUCCEEDED", "COMPLETED", "DONE"].includes(batchInfo.state)
+    ) {
       throw new Error(
         `gemini batch ${batchName} submitted; enable remote.batch.wait to await completion`,
       );
@@ -366,7 +389,9 @@ export async function runGeminiEmbeddingBatches(params: {
 
     for (const line of outputLines) {
       const customId = line.key ?? line.custom_id ?? line.request_id;
-      if (!customId) continue;
+      if (!customId) {
+        continue;
+      }
       remaining.delete(customId);
       if (line.error?.message) {
         errors.push(`${customId}: ${line.error.message}`);
@@ -376,8 +401,7 @@ export async function runGeminiEmbeddingBatches(params: {
         errors.push(`${customId}: ${line.response.error.message}`);
         continue;
       }
-      const embedding =
-        line.embedding?.values ?? line.response?.embedding?.values ?? [];
+      const embedding = line.embedding?.values ?? line.response?.embedding?.values ?? [];
       if (embedding.length === 0) {
         errors.push(`${customId}: empty embedding`);
         continue;

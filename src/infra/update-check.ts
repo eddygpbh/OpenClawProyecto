@@ -1,13 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-
 import { runCommandWithTimeout } from "../process/exec.js";
+import { fetchWithTimeout } from "../utils/fetch-timeout.js";
 import { parseSemver } from "./runtime-guard.js";
+import { channelToNpmTag, type UpdateChannel } from "./update-channels.js";
 
 export type PackageManager = "pnpm" | "bun" | "npm" | "unknown";
 
 export type GitUpdateStatus = {
   root: string;
+  sha: string | null;
+  tag: string | null;
   branch: string | null;
   upstream: string | null;
   dirty: boolean | null;
@@ -59,15 +62,23 @@ async function detectPackageManager(root: string): Promise<PackageManager> {
     const raw = await fs.readFile(path.join(root, "package.json"), "utf-8");
     const parsed = JSON.parse(raw) as { packageManager?: string };
     const pm = parsed?.packageManager?.split("@")[0]?.trim();
-    if (pm === "pnpm" || pm === "bun" || pm === "npm") return pm;
+    if (pm === "pnpm" || pm === "bun" || pm === "npm") {
+      return pm;
+    }
   } catch {
     // ignore
   }
 
   const files = await fs.readdir(root).catch((): string[] => []);
-  if (files.includes("pnpm-lock.yaml")) return "pnpm";
-  if (files.includes("bun.lockb")) return "bun";
-  if (files.includes("package-lock.json")) return "npm";
+  if (files.includes("pnpm-lock.yaml")) {
+    return "pnpm";
+  }
+  if (files.includes("bun.lockb")) {
+    return "bun";
+  }
+  if (files.includes("package-lock.json")) {
+    return "npm";
+  }
   return "unknown";
 }
 
@@ -75,7 +86,9 @@ async function detectGitRoot(root: string): Promise<string | null> {
   const res = await runCommandWithTimeout(["git", "-C", root, "rev-parse", "--show-toplevel"], {
     timeoutMs: 4000,
   }).catch(() => null);
-  if (!res || res.code !== 0) return null;
+  if (!res || res.code !== 0) {
+    return null;
+  }
   const top = res.stdout.trim();
   return top ? path.resolve(top) : null;
 }
@@ -90,6 +103,8 @@ export async function checkGitUpdateStatus(params: {
 
   const base: GitUpdateStatus = {
     root,
+    sha: null,
+    tag: null,
     branch: null,
     upstream: null,
     dirty: null,
@@ -107,15 +122,27 @@ export async function checkGitUpdateStatus(params: {
   }
   const branch = branchRes.stdout.trim() || null;
 
+  const shaRes = await runCommandWithTimeout(["git", "-C", root, "rev-parse", "HEAD"], {
+    timeoutMs,
+  }).catch(() => null);
+  const sha = shaRes && shaRes.code === 0 ? shaRes.stdout.trim() : null;
+
+  const tagRes = await runCommandWithTimeout(
+    ["git", "-C", root, "describe", "--tags", "--exact-match"],
+    { timeoutMs },
+  ).catch(() => null);
+  const tag = tagRes && tagRes.code === 0 ? tagRes.stdout.trim() : null;
+
   const upstreamRes = await runCommandWithTimeout(
     ["git", "-C", root, "rev-parse", "--abbrev-ref", "@{upstream}"],
     { timeoutMs },
   ).catch(() => null);
   const upstream = upstreamRes && upstreamRes.code === 0 ? upstreamRes.stdout.trim() : null;
 
-  const dirtyRes = await runCommandWithTimeout(["git", "-C", root, "status", "--porcelain"], {
-    timeoutMs,
-  }).catch(() => null);
+  const dirtyRes = await runCommandWithTimeout(
+    ["git", "-C", root, "status", "--porcelain", "--", ":!dist/control-ui/"],
+    { timeoutMs },
+  ).catch(() => null);
   const dirty = dirtyRes && dirtyRes.code === 0 ? dirtyRes.stdout.trim().length > 0 : null;
 
   const fetchOk = params.fetch
@@ -134,16 +161,22 @@ export async function checkGitUpdateStatus(params: {
 
   const parseCounts = (raw: string): { ahead: number; behind: number } | null => {
     const parts = raw.trim().split(/\s+/);
-    if (parts.length < 2) return null;
+    if (parts.length < 2) {
+      return null;
+    }
     const ahead = Number.parseInt(parts[0] ?? "", 10);
     const behind = Number.parseInt(parts[1] ?? "", 10);
-    if (!Number.isFinite(ahead) || !Number.isFinite(behind)) return null;
+    if (!Number.isFinite(ahead) || !Number.isFinite(behind)) {
+      return null;
+    }
     return { ahead, behind };
   };
   const parsed = counts && counts.code === 0 ? parseCounts(counts.stdout) : null;
 
   return {
     root,
+    sha,
+    tag,
     branch,
     upstream,
     dirty,
@@ -256,16 +289,6 @@ export async function checkDepsStatus(params: {
   };
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), Math.max(250, timeoutMs));
-  try {
-    return await fetch(url, { signal: ctrl.signal });
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 export async function fetchNpmLatestVersion(params?: {
   timeoutMs?: number;
 }): Promise<RegistryStatus> {
@@ -284,8 +307,9 @@ export async function fetchNpmTagVersion(params: {
   const tag = params.tag;
   try {
     const res = await fetchWithTimeout(
-      `https://registry.npmjs.org/clawdbot/${encodeURIComponent(tag)}`,
-      timeoutMs,
+      `https://registry.npmjs.org/openclaw/${encodeURIComponent(tag)}`,
+      {},
+      Math.max(250, timeoutMs),
     );
     if (!res.ok) {
       return { tag, version: null, error: `HTTP ${res.status}` };
@@ -298,13 +322,45 @@ export async function fetchNpmTagVersion(params: {
   }
 }
 
+export async function resolveNpmChannelTag(params: {
+  channel: UpdateChannel;
+  timeoutMs?: number;
+}): Promise<{ tag: string; version: string | null }> {
+  const channelTag = channelToNpmTag(params.channel);
+  const channelStatus = await fetchNpmTagVersion({ tag: channelTag, timeoutMs: params.timeoutMs });
+  if (params.channel !== "beta") {
+    return { tag: channelTag, version: channelStatus.version };
+  }
+
+  const latestStatus = await fetchNpmTagVersion({ tag: "latest", timeoutMs: params.timeoutMs });
+  if (!latestStatus.version) {
+    return { tag: channelTag, version: channelStatus.version };
+  }
+  if (!channelStatus.version) {
+    return { tag: "latest", version: latestStatus.version };
+  }
+  const cmp = compareSemverStrings(channelStatus.version, latestStatus.version);
+  if (cmp != null && cmp < 0) {
+    return { tag: "latest", version: latestStatus.version };
+  }
+  return { tag: channelTag, version: channelStatus.version };
+}
+
 export function compareSemverStrings(a: string | null, b: string | null): number | null {
   const pa = parseSemver(a);
   const pb = parseSemver(b);
-  if (!pa || !pb) return null;
-  if (pa.major !== pb.major) return pa.major < pb.major ? -1 : 1;
-  if (pa.minor !== pb.minor) return pa.minor < pb.minor ? -1 : 1;
-  if (pa.patch !== pb.patch) return pa.patch < pb.patch ? -1 : 1;
+  if (!pa || !pb) {
+    return null;
+  }
+  if (pa.major !== pb.major) {
+    return pa.major < pb.major ? -1 : 1;
+  }
+  if (pa.minor !== pb.minor) {
+    return pa.minor < pb.minor ? -1 : 1;
+  }
+  if (pa.patch !== pb.patch) {
+    return pa.patch < pb.patch ? -1 : 1;
+  }
   return 0;
 }
 

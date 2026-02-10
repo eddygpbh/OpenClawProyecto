@@ -30,6 +30,24 @@ describe("resolveSkillCommandInvocation", () => {
     expect(invocation?.args).toBe("do the thing");
   });
 
+  it("supports /skill with name argument", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/skill demo_skill do the thing",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.name).toBe("demo_skill");
+    expect(invocation?.args).toBe("do the thing");
+  });
+
+  it("normalizes /skill lookup names", () => {
+    const invocation = resolveSkillCommandInvocation({
+      commandBodyNormalized: "/skill demo-skill",
+      skillCommands: [{ name: "demo_skill", skillName: "demo-skill", description: "Demo" }],
+    });
+    expect(invocation?.command.name).toBe("demo_skill");
+    expect(invocation?.args).toBeUndefined();
+  });
+
   it("returns null for unknown commands", () => {
     const invocation = resolveSkillCommandInvocation({
       commandBodyNormalized: "/unknown arg",
@@ -41,7 +59,7 @@ describe("resolveSkillCommandInvocation", () => {
 
 describe("listSkillCommandsForAgents", () => {
   it("merges command names across agents and de-duplicates", async () => {
-    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-skills-"));
+    const baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skills-"));
     const mainWorkspace = path.join(baseDir, "main");
     const researchWorkspace = path.join(baseDir, "research");
     await writeSkill({

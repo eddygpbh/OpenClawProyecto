@@ -1,9 +1,6 @@
-import os from "node:os";
+import type { PluginRuntime } from "openclaw/plugin-sdk";
 import { beforeEach, describe, expect, it } from "vitest";
-
-import type { PluginRuntime } from "clawdbot/plugin-sdk";
 import type { CoreConfig } from "./types.js";
-
 import { matrixPlugin } from "./channel.js";
 import { setMatrixRuntime } from "./runtime.js";
 
@@ -11,7 +8,7 @@ describe("matrix directory", () => {
   beforeEach(() => {
     setMatrixRuntime({
       state: {
-        resolveStateDir: () => os.tmpdir(),
+        resolveStateDir: (_env, homeDir) => homeDir(),
       },
     } as PluginRuntime);
   });
@@ -21,7 +18,8 @@ describe("matrix directory", () => {
       channels: {
         matrix: {
           dm: { allowFrom: ["matrix:@alice:example.org", "bob"] },
-          rooms: {
+          groupAllowFrom: ["@dana:example.org"],
+          groups: {
             "!room1:example.org": { users: ["@carol:example.org"] },
             "#alias:example.org": { users: [] },
           },
@@ -34,17 +32,28 @@ describe("matrix directory", () => {
     expect(matrixPlugin.directory?.listGroups).toBeTruthy();
 
     await expect(
-      matrixPlugin.directory!.listPeers({ cfg, accountId: undefined, query: undefined, limit: undefined }),
+      matrixPlugin.directory!.listPeers({
+        cfg,
+        accountId: undefined,
+        query: undefined,
+        limit: undefined,
+      }),
     ).resolves.toEqual(
       expect.arrayContaining([
         { kind: "user", id: "user:@alice:example.org" },
         { kind: "user", id: "bob", name: "incomplete id; expected @user:server" },
         { kind: "user", id: "user:@carol:example.org" },
+        { kind: "user", id: "user:@dana:example.org" },
       ]),
     );
 
     await expect(
-      matrixPlugin.directory!.listGroups({ cfg, accountId: undefined, query: undefined, limit: undefined }),
+      matrixPlugin.directory!.listGroups({
+        cfg,
+        accountId: undefined,
+        query: undefined,
+        limit: undefined,
+      }),
     ).resolves.toEqual(
       expect.arrayContaining([
         { kind: "group", id: "room:!room1:example.org" },

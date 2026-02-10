@@ -1,10 +1,41 @@
 import AjvPkg, { type ErrorObject } from "ajv";
+import type { SessionsPatchResult } from "../session-utils.types.js";
 import {
   type AgentEvent,
   AgentEventSchema,
+  type AgentIdentityParams,
+  AgentIdentityParamsSchema,
+  type AgentIdentityResult,
+  AgentIdentityResultSchema,
   AgentParamsSchema,
   type AgentSummary,
   AgentSummarySchema,
+  type AgentsFileEntry,
+  AgentsFileEntrySchema,
+  type AgentsCreateParams,
+  AgentsCreateParamsSchema,
+  type AgentsCreateResult,
+  AgentsCreateResultSchema,
+  type AgentsUpdateParams,
+  AgentsUpdateParamsSchema,
+  type AgentsUpdateResult,
+  AgentsUpdateResultSchema,
+  type AgentsDeleteParams,
+  AgentsDeleteParamsSchema,
+  type AgentsDeleteResult,
+  AgentsDeleteResultSchema,
+  type AgentsFilesGetParams,
+  AgentsFilesGetParamsSchema,
+  type AgentsFilesGetResult,
+  AgentsFilesGetResultSchema,
+  type AgentsFilesListParams,
+  AgentsFilesListParamsSchema,
+  type AgentsFilesListResult,
+  AgentsFilesListResultSchema,
+  type AgentsFilesSetParams,
+  AgentsFilesSetParamsSchema,
+  type AgentsFilesSetResult,
+  AgentsFilesSetResultSchema,
   type AgentsListParams,
   AgentsListParamsSchema,
   type AgentsListResult,
@@ -56,6 +87,16 @@ import {
   CronStatusParamsSchema,
   type CronUpdateParams,
   CronUpdateParamsSchema,
+  type DevicePairApproveParams,
+  DevicePairApproveParamsSchema,
+  type DevicePairListParams,
+  DevicePairListParamsSchema,
+  type DevicePairRejectParams,
+  DevicePairRejectParamsSchema,
+  type DeviceTokenRevokeParams,
+  DeviceTokenRevokeParamsSchema,
+  type DeviceTokenRotateParams,
+  DeviceTokenRotateParamsSchema,
   type ExecApprovalsGetParams,
   ExecApprovalsGetParamsSchema,
   type ExecApprovalsNodeGetParams,
@@ -65,6 +106,10 @@ import {
   type ExecApprovalsSetParams,
   ExecApprovalsSetParamsSchema,
   type ExecApprovalsSnapshot,
+  type ExecApprovalRequestParams,
+  ExecApprovalRequestParamsSchema,
+  type ExecApprovalResolveParams,
+  ExecApprovalResolveParamsSchema,
   ErrorCodes,
   type ErrorShape,
   ErrorShapeSchema,
@@ -83,8 +128,12 @@ import {
   ModelsListParamsSchema,
   type NodeDescribeParams,
   NodeDescribeParamsSchema,
+  type NodeEventParams,
+  NodeEventParamsSchema,
   type NodeInvokeParams,
   NodeInvokeParamsSchema,
+  type NodeInvokeResultParams,
+  NodeInvokeResultParamsSchema,
   type NodeListParams,
   NodeListParamsSchema,
   type NodePairApproveParams,
@@ -118,12 +167,19 @@ import {
   SessionsListParamsSchema,
   type SessionsPatchParams,
   SessionsPatchParamsSchema,
+  type SessionsPreviewParams,
+  SessionsPreviewParamsSchema,
   type SessionsResetParams,
   SessionsResetParamsSchema,
   type SessionsResolveParams,
   SessionsResolveParamsSchema,
+  type SessionsUsageParams,
+  SessionsUsageParamsSchema,
   type ShutdownEvent,
   ShutdownEventSchema,
+  type SkillsBinsParams,
+  SkillsBinsParamsSchema,
+  type SkillsBinsResult,
   type SkillsInstallParams,
   SkillsInstallParamsSchema,
   type SkillsStatusParams,
@@ -177,9 +233,23 @@ export const validateEventFrame = ajv.compile<EventFrame>(EventFrameSchema);
 export const validateSendParams = ajv.compile(SendParamsSchema);
 export const validatePollParams = ajv.compile<PollParams>(PollParamsSchema);
 export const validateAgentParams = ajv.compile(AgentParamsSchema);
+export const validateAgentIdentityParams =
+  ajv.compile<AgentIdentityParams>(AgentIdentityParamsSchema);
 export const validateAgentWaitParams = ajv.compile<AgentWaitParams>(AgentWaitParamsSchema);
 export const validateWakeParams = ajv.compile<WakeParams>(WakeParamsSchema);
 export const validateAgentsListParams = ajv.compile<AgentsListParams>(AgentsListParamsSchema);
+export const validateAgentsCreateParams = ajv.compile<AgentsCreateParams>(AgentsCreateParamsSchema);
+export const validateAgentsUpdateParams = ajv.compile<AgentsUpdateParams>(AgentsUpdateParamsSchema);
+export const validateAgentsDeleteParams = ajv.compile<AgentsDeleteParams>(AgentsDeleteParamsSchema);
+export const validateAgentsFilesListParams = ajv.compile<AgentsFilesListParams>(
+  AgentsFilesListParamsSchema,
+);
+export const validateAgentsFilesGetParams = ajv.compile<AgentsFilesGetParams>(
+  AgentsFilesGetParamsSchema,
+);
+export const validateAgentsFilesSetParams = ajv.compile<AgentsFilesSetParams>(
+  AgentsFilesSetParamsSchema,
+);
 export const validateNodePairRequestParams = ajv.compile<NodePairRequestParams>(
   NodePairRequestParamsSchema,
 );
@@ -197,7 +267,14 @@ export const validateNodeRenameParams = ajv.compile<NodeRenameParams>(NodeRename
 export const validateNodeListParams = ajv.compile<NodeListParams>(NodeListParamsSchema);
 export const validateNodeDescribeParams = ajv.compile<NodeDescribeParams>(NodeDescribeParamsSchema);
 export const validateNodeInvokeParams = ajv.compile<NodeInvokeParams>(NodeInvokeParamsSchema);
+export const validateNodeInvokeResultParams = ajv.compile<NodeInvokeResultParams>(
+  NodeInvokeResultParamsSchema,
+);
+export const validateNodeEventParams = ajv.compile<NodeEventParams>(NodeEventParamsSchema);
 export const validateSessionsListParams = ajv.compile<SessionsListParams>(SessionsListParamsSchema);
+export const validateSessionsPreviewParams = ajv.compile<SessionsPreviewParams>(
+  SessionsPreviewParamsSchema,
+);
 export const validateSessionsResolveParams = ajv.compile<SessionsResolveParams>(
   SessionsResolveParamsSchema,
 );
@@ -211,6 +288,8 @@ export const validateSessionsDeleteParams = ajv.compile<SessionsDeleteParams>(
 export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
   SessionsCompactParamsSchema,
 );
+export const validateSessionsUsageParams =
+  ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
 export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);
 export const validateConfigSetParams = ajv.compile<ConfigSetParams>(ConfigSetParamsSchema);
 export const validateConfigApplyParams = ajv.compile<ConfigApplyParams>(ConfigApplyParamsSchema);
@@ -229,6 +308,7 @@ export const validateChannelsLogoutParams = ajv.compile<ChannelsLogoutParams>(
 );
 export const validateModelsListParams = ajv.compile<ModelsListParams>(ModelsListParamsSchema);
 export const validateSkillsStatusParams = ajv.compile<SkillsStatusParams>(SkillsStatusParamsSchema);
+export const validateSkillsBinsParams = ajv.compile<SkillsBinsParams>(SkillsBinsParamsSchema);
 export const validateSkillsInstallParams =
   ajv.compile<SkillsInstallParams>(SkillsInstallParamsSchema);
 export const validateSkillsUpdateParams = ajv.compile<SkillsUpdateParams>(SkillsUpdateParamsSchema);
@@ -239,11 +319,32 @@ export const validateCronUpdateParams = ajv.compile<CronUpdateParams>(CronUpdate
 export const validateCronRemoveParams = ajv.compile<CronRemoveParams>(CronRemoveParamsSchema);
 export const validateCronRunParams = ajv.compile<CronRunParams>(CronRunParamsSchema);
 export const validateCronRunsParams = ajv.compile<CronRunsParams>(CronRunsParamsSchema);
+export const validateDevicePairListParams = ajv.compile<DevicePairListParams>(
+  DevicePairListParamsSchema,
+);
+export const validateDevicePairApproveParams = ajv.compile<DevicePairApproveParams>(
+  DevicePairApproveParamsSchema,
+);
+export const validateDevicePairRejectParams = ajv.compile<DevicePairRejectParams>(
+  DevicePairRejectParamsSchema,
+);
+export const validateDeviceTokenRotateParams = ajv.compile<DeviceTokenRotateParams>(
+  DeviceTokenRotateParamsSchema,
+);
+export const validateDeviceTokenRevokeParams = ajv.compile<DeviceTokenRevokeParams>(
+  DeviceTokenRevokeParamsSchema,
+);
 export const validateExecApprovalsGetParams = ajv.compile<ExecApprovalsGetParams>(
   ExecApprovalsGetParamsSchema,
 );
 export const validateExecApprovalsSetParams = ajv.compile<ExecApprovalsSetParams>(
   ExecApprovalsSetParamsSchema,
+);
+export const validateExecApprovalRequestParams = ajv.compile<ExecApprovalRequestParams>(
+  ExecApprovalRequestParamsSchema,
+);
+export const validateExecApprovalResolveParams = ajv.compile<ExecApprovalResolveParams>(
+  ExecApprovalResolveParamsSchema,
 );
 export const validateExecApprovalsNodeGetParams = ajv.compile<ExecApprovalsNodeGetParams>(
   ExecApprovalsNodeGetParamsSchema,
@@ -263,8 +364,39 @@ export const validateWebLoginStartParams =
 export const validateWebLoginWaitParams = ajv.compile<WebLoginWaitParams>(WebLoginWaitParamsSchema);
 
 export function formatValidationErrors(errors: ErrorObject[] | null | undefined) {
-  if (!errors) return "unknown validation error";
-  return ajv.errorsText(errors, { separator: "; " });
+  if (!errors?.length) {
+    return "unknown validation error";
+  }
+
+  const parts: string[] = [];
+
+  for (const err of errors) {
+    const keyword = typeof err?.keyword === "string" ? err.keyword : "";
+    const instancePath = typeof err?.instancePath === "string" ? err.instancePath : "";
+
+    if (keyword === "additionalProperties") {
+      const params = err?.params as { additionalProperty?: unknown } | undefined;
+      const additionalProperty = params?.additionalProperty;
+      if (typeof additionalProperty === "string" && additionalProperty.trim()) {
+        const where = instancePath ? `at ${instancePath}` : "at root";
+        parts.push(`${where}: unexpected property '${additionalProperty}'`);
+        continue;
+      }
+    }
+
+    const message =
+      typeof err?.message === "string" && err.message.trim() ? err.message : "validation error";
+    const where = instancePath ? `at ${instancePath}: ` : "";
+    parts.push(`${where}${message}`);
+  }
+
+  // De-dupe while preserving order.
+  const unique = Array.from(new Set(parts.filter((part) => part.trim())));
+  if (!unique.length) {
+    const fallback = ajv.errorsText(errors, { separator: "; " });
+    return fallback || "unknown validation error";
+  }
+  return unique.join("; ");
 }
 
 export {
@@ -283,6 +415,8 @@ export {
   SendParamsSchema,
   PollParamsSchema,
   AgentParamsSchema,
+  AgentIdentityParamsSchema,
+  AgentIdentityResultSchema,
   WakeParamsSchema,
   NodePairRequestParamsSchema,
   NodePairListParamsSchema,
@@ -292,10 +426,12 @@ export {
   NodeListParamsSchema,
   NodeInvokeParamsSchema,
   SessionsListParamsSchema,
+  SessionsPreviewParamsSchema,
   SessionsPatchParamsSchema,
   SessionsResetParamsSchema,
   SessionsDeleteParamsSchema,
   SessionsCompactParamsSchema,
+  SessionsUsageParamsSchema,
   ConfigGetParamsSchema,
   ConfigSetParamsSchema,
   ConfigApplyParamsSchema,
@@ -316,6 +452,19 @@ export {
   WebLoginStartParamsSchema,
   WebLoginWaitParamsSchema,
   AgentSummarySchema,
+  AgentsFileEntrySchema,
+  AgentsCreateParamsSchema,
+  AgentsCreateResultSchema,
+  AgentsUpdateParamsSchema,
+  AgentsUpdateResultSchema,
+  AgentsDeleteParamsSchema,
+  AgentsDeleteResultSchema,
+  AgentsFilesListParamsSchema,
+  AgentsFilesListResultSchema,
+  AgentsFilesGetParamsSchema,
+  AgentsFilesGetResultSchema,
+  AgentsFilesSetParamsSchema,
+  AgentsFilesSetResultSchema,
   AgentsListParamsSchema,
   AgentsListResultSchema,
   ModelsListParamsSchema,
@@ -356,6 +505,8 @@ export type {
   ErrorShape,
   StateVersion,
   AgentEvent,
+  AgentIdentityParams,
+  AgentIdentityResult,
   AgentWaitParams,
   ChatEvent,
   TickEvent,
@@ -364,6 +515,9 @@ export type {
   NodePairRequestParams,
   NodePairListParams,
   NodePairApproveParams,
+  DevicePairListParams,
+  DevicePairApproveParams,
+  DevicePairRejectParams,
   ConfigGetParams,
   ConfigSetParams,
   ConfigApplyParams,
@@ -385,21 +539,41 @@ export type {
   WebLoginStartParams,
   WebLoginWaitParams,
   AgentSummary,
+  AgentsFileEntry,
+  AgentsCreateParams,
+  AgentsCreateResult,
+  AgentsUpdateParams,
+  AgentsUpdateResult,
+  AgentsDeleteParams,
+  AgentsDeleteResult,
+  AgentsFilesListParams,
+  AgentsFilesListResult,
+  AgentsFilesGetParams,
+  AgentsFilesGetResult,
+  AgentsFilesSetParams,
+  AgentsFilesSetResult,
   AgentsListParams,
   AgentsListResult,
   SkillsStatusParams,
+  SkillsBinsParams,
+  SkillsBinsResult,
   SkillsInstallParams,
   SkillsUpdateParams,
   NodePairRejectParams,
   NodePairVerifyParams,
   NodeListParams,
   NodeInvokeParams,
+  NodeInvokeResultParams,
+  NodeEventParams,
   SessionsListParams,
+  SessionsPreviewParams,
   SessionsResolveParams,
   SessionsPatchParams,
+  SessionsPatchResult,
   SessionsResetParams,
   SessionsDeleteParams,
   SessionsCompactParams,
+  SessionsUsageParams,
   CronJob,
   CronListParams,
   CronStatusParams,

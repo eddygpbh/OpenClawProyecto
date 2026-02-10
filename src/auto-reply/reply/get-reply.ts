@@ -1,37 +1,75 @@
+import type { MsgContext } from "../templating.js";
+import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
   resolveSessionAgentId,
+  resolveAgentSkillsFilter,
 } from "../../agents/agent-scope.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
-import { type ClawdbotConfig, loadConfig } from "../../config/config.js";
+import { type OpenClawConfig, loadConfig } from "../../config/config.js";
+import { applyLinkUnderstanding } from "../../link-understanding/apply.js";
+import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
-import type { MsgContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
-import { applyMediaUnderstanding } from "../../media-understanding/apply.js";
-import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { resolveDefaultModel } from "./directive-handling.js";
 import { resolveReplyDirectives } from "./get-reply-directives.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { runPreparedReply } from "./get-reply-run.js";
 import { finalizeInboundContext } from "./inbound-context.js";
+import { applyResetModelOverride } from "./session-reset-model.js";
 import { initSessionState } from "./session.js";
 import { stageSandboxMedia } from "./stage-sandbox-media.js";
 import { createTypingController } from "./typing.js";
 
+function mergeSkillFilters(channelFilter?: string[], agentFilter?: string[]): string[] | undefined {
+  const normalize = (list?: string[]) => {
+    if (!Array.isArray(list)) {
+      return undefined;
+    }
+    return list.map((entry) => String(entry).trim()).filter(Boolean);
+  };
+  const channel = normalize(channelFilter);
+  const agent = normalize(agentFilter);
+  if (!channel && !agent) {
+    return undefined;
+  }
+  if (!channel) {
+    return agent;
+  }
+  if (!agent) {
+    return channel;
+  }
+  if (channel.length === 0 || agent.length === 0) {
+    return [];
+  }
+  const agentSet = new Set(agent);
+  return channel.filter((name) => agentSet.has(name));
+}
+
 export async function getReplyFromConfig(
   ctx: MsgContext,
   opts?: GetReplyOptions,
-  configOverride?: ClawdbotConfig,
+  configOverride?: OpenClawConfig,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
+  const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const cfg = configOverride ?? loadConfig();
+  const targetSessionKey =
+    ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
+  const agentSessionKey = targetSessionKey || ctx.SessionKey;
   const agentId = resolveSessionAgentId({
-    sessionKey: ctx.SessionKey,
+    sessionKey: agentSessionKey,
     config: cfg,
   });
+  const mergedSkillFilter = mergeSkillFilters(
+    opts?.skillFilter,
+    resolveAgentSkillsFilter(cfg, agentId),
+  );
+  const resolvedOpts =
+    mergedSkillFilter !== undefined ? { ...opts, skillFilter: mergedSkillFilter } : opts;
   const agentCfg = cfg.agents?.defaults;
   const sessionCfg = cfg.session;
   const { defaultProvider, defaultModel, aliasIndex } = resolveDefaultModel({
@@ -58,7 +96,7 @@ export async function getReplyFromConfig(
   const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
   const workspace = await ensureAgentWorkspace({
     dir: workspaceDirRaw,
-    ensureBootstrapFiles: !agentCfg?.skipBootstrap,
+    ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
   });
   const workspaceDir = workspace.dir;
   const agentDir = resolveAgentDir(cfg, agentId);
@@ -69,6 +107,7 @@ export async function getReplyFromConfig(
     typeof configuredTypingSeconds === "number" ? configuredTypingSeconds : 6;
   const typing = createTypingController({
     onReplyStart: opts?.onReplyStart,
+    onCleanup: opts?.onTypingCleanup,
     typingIntervalSeconds,
     silentToken: SILENT_REPLY_TOKEN,
     log: defaultRuntime.log,
@@ -77,12 +116,18 @@ export async function getReplyFromConfig(
 
   const finalized = finalizeInboundContext(ctx);
 
-  await applyMediaUnderstanding({
-    ctx: finalized,
-    cfg,
-    agentDir,
-    activeModel: { provider, model },
-  });
+  if (!isFastTestEnv) {
+    await applyMediaUnderstanding({
+      ctx: finalized,
+      cfg,
+      agentDir,
+      activeModel: { provider, model },
+    });
+    await applyLinkUnderstanding({
+      ctx: finalized,
+      cfg,
+    });
+  }
 
   const commandAuthorized = finalized.CommandAuthorized;
   resolveCommandAuthorization({
@@ -103,6 +148,7 @@ export async function getReplyFromConfig(
     sessionKey,
     sessionId,
     isNewSession,
+    resetTriggered,
     systemSent,
     abortedLastRun,
     storePath,
@@ -110,7 +156,23 @@ export async function getReplyFromConfig(
     groupResolution,
     isGroup,
     triggerBodyNormalized,
+    bodyStripped,
   } = sessionState;
+
+  await applyResetModelOverride({
+    cfg,
+    resetTriggered,
+    bodyStripped,
+    sessionCtx,
+    ctx: finalized,
+    sessionEntry,
+    sessionStore,
+    sessionKey,
+    storePath,
+    defaultProvider,
+    defaultModel,
+    aliasIndex,
+  });
 
   const directiveResult = await resolveReplyDirectives({
     ctx: finalized,
@@ -135,8 +197,8 @@ export async function getReplyFromConfig(
     provider,
     model,
     typing,
-    opts,
-    skillFilter: opts?.skillFilter,
+    opts: resolvedOpts,
+    skillFilter: mergedSkillFilter,
   });
   if (directiveResult.kind === "reply") {
     return directiveResult.reply;
@@ -178,6 +240,7 @@ export async function getReplyFromConfig(
     sessionCtx,
     cfg,
     agentId,
+    agentDir,
     sessionEntry,
     previousSessionEntry,
     sessionStore,
@@ -186,7 +249,7 @@ export async function getReplyFromConfig(
     sessionScope,
     workspaceDir,
     isGroup,
-    opts,
+    opts: resolvedOpts,
     typing,
     allowTextCommands,
     inlineStatusRequested,
@@ -208,7 +271,7 @@ export async function getReplyFromConfig(
     contextTokens,
     directiveAck,
     abortedLastRun,
-    skillFilter: opts?.skillFilter,
+    skillFilter: mergedSkillFilter,
   });
   if (inlineActionResult.kind === "reply") {
     return inlineActionResult.reply;
@@ -254,10 +317,12 @@ export async function getReplyFromConfig(
     perMessageQueueMode,
     perMessageQueueOptions,
     typing,
-    opts,
+    opts: resolvedOpts,
+    defaultProvider,
     defaultModel,
     timeoutMs,
     isNewSession,
+    resetTriggered,
     systemSent,
     sessionEntry,
     sessionStore,

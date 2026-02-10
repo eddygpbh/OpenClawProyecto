@@ -24,9 +24,21 @@ export const normalizeAllowFrom = (list?: Array<string | number>): NormalizedAll
   };
 };
 
+export const normalizeAllowFromWithStore = (params: {
+  allowFrom?: Array<string | number>;
+  storeAllowFrom?: string[];
+}): NormalizedAllowFrom => {
+  const combined = [...(params.allowFrom ?? []), ...(params.storeAllowFrom ?? [])]
+    .map((value) => String(value).trim())
+    .filter(Boolean);
+  return normalizeAllowFrom(combined);
+};
+
 export const firstDefined = <T>(...values: Array<T | undefined>) => {
   for (const value of values) {
-    if (typeof value !== "undefined") return value;
+    if (typeof value !== "undefined") {
+      return value;
+    }
   }
   return undefined;
 };
@@ -37,11 +49,19 @@ export const isSenderAllowed = (params: {
   senderUsername?: string;
 }) => {
   const { allow, senderId, senderUsername } = params;
-  if (!allow.hasEntries) return true;
-  if (allow.hasWildcard) return true;
-  if (senderId && allow.entries.includes(senderId)) return true;
+  if (!allow.hasEntries) {
+    return true;
+  }
+  if (allow.hasWildcard) {
+    return true;
+  }
+  if (senderId && allow.entries.includes(senderId)) {
+    return true;
+  }
   const username = senderUsername?.toLowerCase();
-  if (!username) return false;
+  if (!username) {
+    return false;
+  }
   return allow.entriesLower.some((entry) => entry === username || entry === `@${username}`);
 };
 
@@ -54,12 +74,16 @@ export const resolveSenderAllowMatch = (params: {
   if (allow.hasWildcard) {
     return { allowed: true, matchKey: "*", matchSource: "wildcard" };
   }
-  if (!allow.hasEntries) return { allowed: false };
+  if (!allow.hasEntries) {
+    return { allowed: false };
+  }
   if (senderId && allow.entries.includes(senderId)) {
     return { allowed: true, matchKey: senderId, matchSource: "id" };
   }
   const username = senderUsername?.toLowerCase();
-  if (!username) return { allowed: false };
+  if (!username) {
+    return { allowed: false };
+  }
   const entry = allow.entriesLower.find(
     (candidate) => candidate === username || candidate === `@${username}`,
   );

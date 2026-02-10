@@ -1,9 +1,15 @@
 {
-  "name": "@clawdbot/signal",
-  "version": "2026.1.17-1",
+  "name": "@openclaw/signal",
+  "version": "2026.2.9",
+  "private": true,
+  "description": "OpenClaw Signal channel plugin",
   "type": "module",
-  "description": "Clawdbot Signal channel plugin",
-  "clawdbot": {
-    "extensions": ["./index.ts"]
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
   }
 }

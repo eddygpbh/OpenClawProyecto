@@ -1,11 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-
 import type { loadConfig } from "../config/config.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { resolveStateDir } from "../config/paths.js";
-import { resolveClawdbotPackageRoot } from "./clawdbot-root.js";
-import { compareSemverStrings, fetchNpmTagVersion, checkUpdateStatus } from "./update-check.js";
 import { VERSION } from "../version.js";
+import { resolveOpenClawPackageRoot } from "./openclaw-root.js";
+import { normalizeUpdateChannel, DEFAULT_PACKAGE_CHANNEL } from "./update-channels.js";
+import { compareSemverStrings, resolveNpmChannelTag, checkUpdateStatus } from "./update-check.js";
 
 type UpdateCheckState = {
   lastCheckedAt?: string;
@@ -16,20 +17,13 @@ type UpdateCheckState = {
 const UPDATE_CHECK_FILENAME = "update-check.json";
 const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-function normalizeChannel(value?: string | null): "stable" | "beta" | null {
-  if (!value) return null;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "stable" || normalized === "beta") return normalized;
-  return null;
-}
-
-function channelToTag(channel: "stable" | "beta"): string {
-  return channel === "beta" ? "beta" : "latest";
-}
-
 function shouldSkipCheck(allowInTests: boolean): boolean {
-  if (allowInTests) return false;
-  if (process.env.VITEST || process.env.NODE_ENV === "test") return true;
+  if (allowInTests) {
+    return false;
+  }
+  if (process.env.VITEST || process.env.NODE_ENV === "test") {
+    return true;
+  }
   return false;
 }
 
@@ -54,19 +48,27 @@ export async function runGatewayUpdateCheck(params: {
   isNixMode: boolean;
   allowInTests?: boolean;
 }): Promise<void> {
-  if (shouldSkipCheck(Boolean(params.allowInTests))) return;
-  if (params.isNixMode) return;
-  if (params.cfg.update?.checkOnStart === false) return;
+  if (shouldSkipCheck(Boolean(params.allowInTests))) {
+    return;
+  }
+  if (params.isNixMode) {
+    return;
+  }
+  if (params.cfg.update?.checkOnStart === false) {
+    return;
+  }
 
   const statePath = path.join(resolveStateDir(), UPDATE_CHECK_FILENAME);
   const state = await readState(statePath);
   const now = Date.now();
   const lastCheckedAt = state.lastCheckedAt ? Date.parse(state.lastCheckedAt) : null;
   if (lastCheckedAt && Number.isFinite(lastCheckedAt)) {
-    if (now - lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) return;
+    if (now - lastCheckedAt < UPDATE_CHECK_INTERVAL_MS) {
+      return;
+    }
   }
 
-  const root = await resolveClawdbotPackageRoot({
+  const root = await resolveOpenClawPackageRoot({
     moduleUrl: import.meta.url,
     argv1: process.argv[1],
     cwd: process.cwd(),
@@ -88,23 +90,23 @@ export async function runGatewayUpdateCheck(params: {
     return;
   }
 
-  const channel = normalizeChannel(params.cfg.update?.channel) ?? "stable";
-  const tag = channelToTag(channel);
-  const tagStatus = await fetchNpmTagVersion({ tag, timeoutMs: 2500 });
-  if (!tagStatus.version) {
+  const channel = normalizeUpdateChannel(params.cfg.update?.channel) ?? DEFAULT_PACKAGE_CHANNEL;
+  const resolved = await resolveNpmChannelTag({ channel, timeoutMs: 2500 });
+  const tag = resolved.tag;
+  if (!resolved.version) {
     await writeState(statePath, nextState);
     return;
   }
 
-  const cmp = compareSemverStrings(VERSION, tagStatus.version);
+  const cmp = compareSemverStrings(VERSION, resolved.version);
   if (cmp != null && cmp < 0) {
     const shouldNotify =
-      state.lastNotifiedVersion !== tagStatus.version || state.lastNotifiedTag !== tag;
+      state.lastNotifiedVersion !== resolved.version || state.lastNotifiedTag !== tag;
     if (shouldNotify) {
       params.log.info(
-        `update available (${tag}): v${tagStatus.version} (current v${VERSION}). Run: clawdbot update`,
+        `update available (${tag}): v${resolved.version} (current v${VERSION}). Run: ${formatCliCommand("openclaw update")}`,
       );
-      nextState.lastNotifiedVersion = tagStatus.version;
+      nextState.lastNotifiedVersion = resolved.version;
       nextState.lastNotifiedTag = tag;
     }
   }

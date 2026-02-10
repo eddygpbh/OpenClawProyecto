@@ -1,12 +1,12 @@
 import type { ImageContent } from "@mariozechner/pi-ai";
-import { resolveHeartbeatPrompt } from "../auto-reply/heartbeat.js";
 import type { ThinkLevel } from "../auto-reply/thinking.js";
-import type { ClawdbotConfig } from "../config/config.js";
+import type { OpenClawConfig } from "../config/config.js";
+import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
+import { resolveHeartbeatPrompt } from "../auto-reply/heartbeat.js";
 import { shouldLogVerbose } from "../globals.js";
-import { createSubsystemLogger } from "../logging.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { resolveUserPath } from "../utils.js";
-import { resolveClawdbotDocsPath } from "./docs-path.js";
 import { resolveSessionAgentIds } from "./agent-scope.js";
 import { makeBootstrapWarn, resolveBootstrapContextForRun } from "./bootstrap-files.js";
 import { resolveCliBackendConfig } from "./cli-backends.js";
@@ -25,18 +25,20 @@ import {
   resolveSystemPromptUsage,
   writeCliImages,
 } from "./cli-runner/helpers.js";
+import { resolveOpenClawDocsPath } from "./docs-path.js";
 import { FailoverError, resolveFailoverStatus } from "./failover-error.js";
 import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-helpers.js";
-import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
+import { redactRunIdentifier, resolveRunWorkspaceDir } from "./workspace-run.js";
 
 const log = createSubsystemLogger("agent/claude-cli");
 
 export async function runCliAgent(params: {
   sessionId: string;
   sessionKey?: string;
+  agentId?: string;
   sessionFile: string;
   workspaceDir: string;
-  config?: ClawdbotConfig;
+  config?: OpenClawConfig;
   prompt: string;
   provider: string;
   model?: string;
@@ -44,12 +46,27 @@ export async function runCliAgent(params: {
   timeoutMs: number;
   runId: string;
   extraSystemPrompt?: string;
+  streamParams?: import("../commands/agent/types.js").AgentStreamParams;
   ownerNumbers?: string[];
   cliSessionId?: string;
   images?: ImageContent[];
 }): Promise<EmbeddedPiRunResult> {
   const started = Date.now();
-  const resolvedWorkspace = resolveUserPath(params.workspaceDir);
+  const workspaceResolution = resolveRunWorkspaceDir({
+    workspaceDir: params.workspaceDir,
+    sessionKey: params.sessionKey,
+    agentId: params.agentId,
+    config: params.config,
+  });
+  const resolvedWorkspace = workspaceResolution.workspaceDir;
+  const redactedSessionId = redactRunIdentifier(params.sessionId);
+  const redactedSessionKey = redactRunIdentifier(params.sessionKey);
+  const redactedWorkspace = redactRunIdentifier(resolvedWorkspace);
+  if (workspaceResolution.usedFallback) {
+    log.warn(
+      `[workspace-fallback] caller=runCliAgent reason=${workspaceResolution.fallbackReason} run=${params.runId} session=${redactedSessionId} sessionKey=${redactedSessionKey} agent=${workspaceResolution.agentId} workspace=${redactedWorkspace}`,
+    );
+  }
   const workspaceDir = resolvedWorkspace;
 
   const backendResolved = resolveCliBackendConfig(params.provider, params.config);
@@ -84,7 +101,7 @@ export async function runCliAgent(params: {
     sessionAgentId === defaultAgentId
       ? resolveHeartbeatPrompt(params.config?.agents?.defaults?.heartbeat?.prompt)
       : undefined;
-  const docsPath = await resolveClawdbotDocsPath({
+  const docsPath = await resolveOpenClawDocsPath({
     workspaceDir,
     argv1: process.argv[1],
     cwd: process.cwd(),
@@ -101,6 +118,7 @@ export async function runCliAgent(params: {
     tools: [],
     contextFiles,
     modelDisplay,
+    agentId: sessionAgentId,
   });
 
   const { sessionId: cliSessionIdToSend, isNew } = resolveSessionIdToSend({
@@ -164,7 +182,7 @@ export async function runCliAgent(params: {
       log.info(
         `cli exec: provider=${params.provider} model=${normalizedModel} promptChars=${params.prompt.length}`,
       );
-      const logOutputText = process.env.CLAWDBOT_CLAUDE_CLI_LOG_OUTPUT === "1";
+      const logOutputText = isTruthyEnvValue(process.env.OPENCLAW_CLAUDE_CLI_LOG_OUTPUT);
       if (logOutputText) {
         const logArgs: string[] = [];
         for (let i = 0; i < args.length; i += 1) {
@@ -225,12 +243,20 @@ export async function runCliAgent(params: {
       const stdout = result.stdout.trim();
       const stderr = result.stderr.trim();
       if (logOutputText) {
-        if (stdout) log.info(`cli stdout:\n${stdout}`);
-        if (stderr) log.info(`cli stderr:\n${stderr}`);
+        if (stdout) {
+          log.info(`cli stdout:\n${stdout}`);
+        }
+        if (stderr) {
+          log.info(`cli stderr:\n${stderr}`);
+        }
       }
       if (shouldLogVerbose()) {
-        if (stdout) log.debug(`cli stdout:\n${stdout}`);
-        if (stderr) log.debug(`cli stderr:\n${stderr}`);
+        if (stdout) {
+          log.debug(`cli stdout:\n${stdout}`);
+        }
+        if (stderr) {
+          log.debug(`cli stderr:\n${stderr}`);
+        }
       }
 
       if (result.code !== 0) {
@@ -275,7 +301,9 @@ export async function runCliAgent(params: {
       },
     };
   } catch (err) {
-    if (err instanceof FailoverError) throw err;
+    if (err instanceof FailoverError) {
+      throw err;
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (isFailoverErrorMessage(message)) {
       const reason = classifyFailoverReason(message) ?? "unknown";
@@ -298,9 +326,10 @@ export async function runCliAgent(params: {
 export async function runClaudeCliAgent(params: {
   sessionId: string;
   sessionKey?: string;
+  agentId?: string;
   sessionFile: string;
   workspaceDir: string;
-  config?: ClawdbotConfig;
+  config?: OpenClawConfig;
   prompt: string;
   provider?: string;
   model?: string;
@@ -315,6 +344,7 @@ export async function runClaudeCliAgent(params: {
   return runCliAgent({
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
+    agentId: params.agentId,
     sessionFile: params.sessionFile,
     workspaceDir: params.workspaceDir,
     config: params.config,

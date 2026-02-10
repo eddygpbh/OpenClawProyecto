@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const agentCommand = vi.fn();
@@ -26,33 +25,35 @@ describe("runBootOnce", () => {
   });
 
   it("skips when BOOT.md is missing", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-boot-"));
-    await expect(
-      runBootOnce({ cfg: {}, deps: makeDeps(), workspaceDir }),
-    ).resolves.toEqual({ status: "skipped", reason: "missing" });
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-boot-"));
+    await expect(runBootOnce({ cfg: {}, deps: makeDeps(), workspaceDir })).resolves.toEqual({
+      status: "skipped",
+      reason: "missing",
+    });
     expect(agentCommand).not.toHaveBeenCalled();
     await fs.rm(workspaceDir, { recursive: true, force: true });
   });
 
   it("skips when BOOT.md is empty", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-boot-"));
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-boot-"));
     await fs.writeFile(path.join(workspaceDir, "BOOT.md"), "   \n", "utf-8");
-    await expect(
-      runBootOnce({ cfg: {}, deps: makeDeps(), workspaceDir }),
-    ).resolves.toEqual({ status: "skipped", reason: "empty" });
+    await expect(runBootOnce({ cfg: {}, deps: makeDeps(), workspaceDir })).resolves.toEqual({
+      status: "skipped",
+      reason: "empty",
+    });
     expect(agentCommand).not.toHaveBeenCalled();
     await fs.rm(workspaceDir, { recursive: true, force: true });
   });
 
   it("runs agent command when BOOT.md exists", async () => {
-    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-boot-"));
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-boot-"));
     const content = "Say hello when you wake up.";
     await fs.writeFile(path.join(workspaceDir, "BOOT.md"), content, "utf-8");
 
     agentCommand.mockResolvedValue(undefined);
-    await expect(
-      runBootOnce({ cfg: {}, deps: makeDeps(), workspaceDir }),
-    ).resolves.toEqual({ status: "ran" });
+    await expect(runBootOnce({ cfg: {}, deps: makeDeps(), workspaceDir })).resolves.toEqual({
+      status: "ran",
+    });
 
     expect(agentCommand).toHaveBeenCalledTimes(1);
     const call = agentCommand.mock.calls[0]?.[0];

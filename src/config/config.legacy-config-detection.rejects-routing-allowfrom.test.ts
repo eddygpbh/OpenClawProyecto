@@ -23,21 +23,33 @@ describe("legacy config detection", () => {
       expect(res.issues[0]?.path).toBe("routing.groupChat.requireMention");
     }
   });
-  it("migrates routing.allowFrom to channels.whatsapp.allowFrom", async () => {
+  it("migrates routing.allowFrom to channels.whatsapp.allowFrom when whatsapp configured", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
     const res = migrateLegacyConfig({
       routing: { allowFrom: ["+15555550123"] },
+      channels: { whatsapp: {} },
     });
     expect(res.changes).toContain("Moved routing.allowFrom → channels.whatsapp.allowFrom.");
     expect(res.config?.channels?.whatsapp?.allowFrom).toEqual(["+15555550123"]);
     expect(res.config?.routing?.allowFrom).toBeUndefined();
   });
-  it("migrates routing.groupChat.requireMention to channels whatsapp/telegram/imessage groups", async () => {
+  it("drops routing.allowFrom when whatsapp missing", async () => {
+    vi.resetModules();
+    const { migrateLegacyConfig } = await import("./config.js");
+    const res = migrateLegacyConfig({
+      routing: { allowFrom: ["+15555550123"] },
+    });
+    expect(res.changes).toContain("Removed routing.allowFrom (channels.whatsapp not configured).");
+    expect(res.config?.channels?.whatsapp).toBeUndefined();
+    expect(res.config?.routing?.allowFrom).toBeUndefined();
+  });
+  it("migrates routing.groupChat.requireMention to channels whatsapp/telegram/imessage groups when whatsapp configured", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
     const res = migrateLegacyConfig({
       routing: { groupChat: { requireMention: false } },
+      channels: { whatsapp: {} },
     });
     expect(res.changes).toContain(
       'Moved routing.groupChat.requireMention → channels.whatsapp.groups."*".requireMention.',
@@ -53,16 +65,36 @@ describe("legacy config detection", () => {
     expect(res.config?.channels?.imessage?.groups?.["*"]?.requireMention).toBe(false);
     expect(res.config?.routing?.groupChat?.requireMention).toBeUndefined();
   });
+  it("migrates routing.groupChat.requireMention to telegram/imessage when whatsapp missing", async () => {
+    vi.resetModules();
+    const { migrateLegacyConfig } = await import("./config.js");
+    const res = migrateLegacyConfig({
+      routing: { groupChat: { requireMention: false } },
+    });
+    expect(res.changes).toContain(
+      'Moved routing.groupChat.requireMention → channels.telegram.groups."*".requireMention.',
+    );
+    expect(res.changes).toContain(
+      'Moved routing.groupChat.requireMention → channels.imessage.groups."*".requireMention.',
+    );
+    expect(res.changes).not.toContain(
+      'Moved routing.groupChat.requireMention → channels.whatsapp.groups."*".requireMention.',
+    );
+    expect(res.config?.channels?.whatsapp).toBeUndefined();
+    expect(res.config?.channels?.telegram?.groups?.["*"]?.requireMention).toBe(false);
+    expect(res.config?.channels?.imessage?.groups?.["*"]?.requireMention).toBe(false);
+    expect(res.config?.routing?.groupChat?.requireMention).toBeUndefined();
+  });
   it("migrates routing.groupChat.mentionPatterns to messages.groupChat.mentionPatterns", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
     const res = migrateLegacyConfig({
-      routing: { groupChat: { mentionPatterns: ["@clawd"] } },
+      routing: { groupChat: { mentionPatterns: ["@openclaw"] } },
     });
     expect(res.changes).toContain(
       "Moved routing.groupChat.mentionPatterns → messages.groupChat.mentionPatterns.",
     );
-    expect(res.config?.messages?.groupChat?.mentionPatterns).toEqual(["@clawd"]);
+    expect(res.config?.messages?.groupChat?.mentionPatterns).toEqual(["@openclaw"]);
     expect(res.config?.routing?.groupChat?.mentionPatterns).toBeUndefined();
   });
   it("migrates routing agentToAgent/queue/transcribeAudio to tools/messages/media", async () => {
@@ -141,6 +173,83 @@ describe("legacy config detection", () => {
     });
     expect((res.config as { agent?: unknown }).agent).toBeUndefined();
   });
+  it("migrates top-level memorySearch to agents.defaults.memorySearch", async () => {
+    vi.resetModules();
+    const { migrateLegacyConfig } = await import("./config.js");
+    const res = migrateLegacyConfig({
+      memorySearch: {
+        provider: "local",
+        fallback: "none",
+        query: { maxResults: 7 },
+      },
+    });
+    expect(res.changes).toContain("Moved memorySearch → agents.defaults.memorySearch.");
+    expect(res.config?.agents?.defaults?.memorySearch).toMatchObject({
+      provider: "local",
+      fallback: "none",
+      query: { maxResults: 7 },
+    });
+    expect((res.config as { memorySearch?: unknown }).memorySearch).toBeUndefined();
+  });
+  it("merges top-level memorySearch into agents.defaults.memorySearch", async () => {
+    vi.resetModules();
+    const { migrateLegacyConfig } = await import("./config.js");
+    const res = migrateLegacyConfig({
+      memorySearch: {
+        provider: "local",
+        fallback: "none",
+        query: { maxResults: 7 },
+      },
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+            model: "text-embedding-3-small",
+          },
+        },
+      },
+    });
+    expect(res.changes).toContain(
+      "Merged memorySearch → agents.defaults.memorySearch (filled missing fields from legacy; kept explicit agents.defaults values).",
+    );
+    expect(res.config?.agents?.defaults?.memorySearch).toMatchObject({
+      provider: "openai",
+      model: "text-embedding-3-small",
+      fallback: "none",
+      query: { maxResults: 7 },
+    });
+  });
+  it("keeps nested agents.defaults.memorySearch values when merging legacy defaults", async () => {
+    vi.resetModules();
+    const { migrateLegacyConfig } = await import("./config.js");
+    const res = migrateLegacyConfig({
+      memorySearch: {
+        query: {
+          maxResults: 7,
+          minScore: 0.25,
+          hybrid: { enabled: true, textWeight: 0.8, vectorWeight: 0.2 },
+        },
+      },
+      agents: {
+        defaults: {
+          memorySearch: {
+            query: {
+              maxResults: 3,
+              hybrid: { enabled: false },
+            },
+          },
+        },
+      },
+    });
+
+    expect(res.config?.agents?.defaults?.memorySearch).toMatchObject({
+      query: {
+        maxResults: 3,
+        minScore: 0.25,
+        hybrid: { enabled: false, textWeight: 0.8, vectorWeight: 0.2 },
+      },
+    });
+  });
   it("migrates tools.bash to tools.exec", async () => {
     vi.resetModules();
     const { migrateLegacyConfig } = await import("./config.js");
@@ -166,7 +275,7 @@ describe("legacy config detection", () => {
         list: [
           {
             id: "work",
-            workspace: "~/clawd-work",
+            workspace: "~/openclaw-work",
             tools: {
               elevated: {
                 enabled: false,
@@ -218,17 +327,20 @@ describe("legacy config detection", () => {
     expect(res.config?.gateway?.auth?.mode).toBe("token");
     expect((res.config?.gateway as { token?: string })?.token).toBeUndefined();
   });
-  it("migrates gateway.bind and bridge.bind from 'tailnet' to 'auto'", async () => {
+  it("keeps gateway.bind tailnet", async () => {
     vi.resetModules();
-    const { migrateLegacyConfig } = await import("./config.js");
+    const { migrateLegacyConfig, validateConfigObject } = await import("./config.js");
     const res = migrateLegacyConfig({
       gateway: { bind: "tailnet" as const },
-      bridge: { bind: "tailnet" as const },
     });
-    expect(res.changes).toContain("Migrated gateway.bind from 'tailnet' to 'auto'.");
-    expect(res.changes).toContain("Migrated bridge.bind from 'tailnet' to 'auto'.");
-    expect(res.config?.gateway?.bind).toBe("auto");
-    expect(res.config?.bridge?.bind).toBe("auto");
+    expect(res.changes).not.toContain("Migrated gateway.bind from 'tailnet' to 'auto'.");
+    expect(res.config).toBeNull();
+
+    const validated = validateConfigObject({ gateway: { bind: "tailnet" as const } });
+    expect(validated.ok).toBe(true);
+    if (validated.ok) {
+      expect(validated.config.gateway?.bind).toBe("tailnet");
+    }
   });
   it('rejects telegram.dmPolicy="open" without allowFrom "*"', async () => {
     vi.resetModules();

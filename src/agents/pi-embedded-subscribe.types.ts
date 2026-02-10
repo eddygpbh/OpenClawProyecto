@@ -1,5 +1,4 @@
 import type { AgentSession } from "@mariozechner/pi-coding-agent";
-
 import type { ReasoningLevel, VerboseLevel } from "../auto-reply/thinking.js";
 import type { BlockReplyChunking } from "./pi-embedded-block-chunker.js";
 
@@ -19,6 +18,9 @@ export type SubscribeEmbeddedPiSessionParams = {
     text?: string;
     mediaUrls?: string[];
     audioAsVoice?: boolean;
+    replyToId?: string;
+    replyToTag?: boolean;
+    replyToCurrent?: boolean;
   }) => void | Promise<void>;
   /** Flush pending block replies (e.g., before tool execution to preserve message boundaries). */
   onBlockReplyFlush?: () => void | Promise<void>;

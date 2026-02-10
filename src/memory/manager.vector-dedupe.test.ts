@@ -1,9 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
 import { getMemorySearchManager, type MemoryIndexManager } from "./index.js";
 import { buildFileEntry } from "./internal.js";
 
@@ -27,7 +25,7 @@ describe("memory vector dedupe", () => {
   let manager: MemoryIndexManager | null = null;
 
   beforeEach(async () => {
-    workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "clawdbot-mem-"));
+    workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-mem-"));
     indexPath = path.join(workspaceDir, "index.sqlite");
     await fs.mkdir(path.join(workspaceDir, "memory"));
     await fs.writeFile(path.join(workspaceDir, "MEMORY.md"), "Hello memory.");
@@ -60,10 +58,16 @@ describe("memory vector dedupe", () => {
 
     const result = await getMemorySearchManager({ cfg, agentId: "main" });
     expect(result.manager).not.toBeNull();
-    if (!result.manager) throw new Error("manager missing");
+    if (!result.manager) {
+      throw new Error("manager missing");
+    }
     manager = result.manager;
 
-    const db = (manager as unknown as { db: { exec: (sql: string) => void; prepare: (sql: string) => unknown } }).db;
+    const db = (
+      manager as unknown as {
+        db: { exec: (sql: string) => void; prepare: (sql: string) => unknown };
+      }
+    ).db;
     db.exec("CREATE TABLE IF NOT EXISTS chunks_vec (id TEXT PRIMARY KEY, embedding BLOB)");
 
     const sqlSeen: string[] = [];
@@ -75,16 +79,20 @@ describe("memory vector dedupe", () => {
       return originalPrepare(sql);
     };
 
-    (manager as unknown as { ensureVectorReady: (dims?: number) => Promise<boolean> }).ensureVectorReady =
-      async () => true;
+    (
+      manager as unknown as { ensureVectorReady: (dims?: number) => Promise<boolean> }
+    ).ensureVectorReady = async () => true;
 
     const entry = await buildFileEntry(path.join(workspaceDir, "MEMORY.md"), workspaceDir);
-    await (manager as unknown as { indexFile: (entry: unknown, options: { source: "memory" }) => Promise<void> }).indexFile(
-      entry,
-      { source: "memory" },
-    );
+    await (
+      manager as unknown as {
+        indexFile: (entry: unknown, options: { source: "memory" }) => Promise<void>;
+      }
+    ).indexFile(entry, { source: "memory" });
 
-    const deleteIndex = sqlSeen.findIndex((sql) => sql.includes("DELETE FROM chunks_vec WHERE id = ?"));
+    const deleteIndex = sqlSeen.findIndex((sql) =>
+      sql.includes("DELETE FROM chunks_vec WHERE id = ?"),
+    );
     const insertIndex = sqlSeen.findIndex((sql) => sql.includes("INSERT INTO chunks_vec"));
     expect(deleteIndex).toBeGreaterThan(-1);
     expect(insertIndex).toBeGreaterThan(-1);

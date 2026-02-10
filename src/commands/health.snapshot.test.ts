@@ -1,14 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
 import type { HealthSummary } from "./health.js";
-import { getHealthSnapshot } from "./health.js";
+import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
-import { telegramPlugin } from "../../extensions/telegram/src/channel.js";
+import { getHealthSnapshot } from "./health.js";
 
 let testConfig: Record<string, unknown> = {};
 let testStore: Record<string, { updatedAt?: number }> = {};
@@ -24,6 +22,7 @@ vi.mock("../config/config.js", async (importOriginal) => {
 vi.mock("../config/sessions.js", () => ({
   resolveStorePath: () => "/tmp/sessions.json",
   loadSessionStore: () => testStore,
+  readSessionUpdatedAt: vi.fn(() => undefined),
   recordSessionMetaFromInbound: vi.fn().mockResolvedValue(undefined),
   updateLastRoute: vi.fn().mockResolvedValue(undefined),
 }));
@@ -134,7 +133,7 @@ describe("getHealthSnapshot", () => {
   });
 
   it("treats telegram.tokenFile as configured", async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawdbot-health-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-health-"));
     const tokenFile = path.join(tmpDir, "telegram-token");
     fs.writeFileSync(tokenFile, "t-file\n", "utf-8");
     testConfig = { channels: { telegram: { tokenFile } } };

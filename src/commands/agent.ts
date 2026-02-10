@@ -1,10 +1,14 @@
+import type { AgentCommandOpts } from "./agent/types.js";
 import {
+  listAgentIds,
   resolveAgentDir,
   resolveAgentModelFallbacksOverride,
   resolveAgentModelPrimary,
+  resolveAgentSkillsFilter,
   resolveAgentWorkspaceDir,
 } from "../agents/agent-scope.js";
 import { ensureAuthProfileStore } from "../agents/auth-profiles.js";
+import { clearSessionAuthProfileOverride } from "../agents/auth-profiles/session-override.js";
 import { runCliAgent } from "../agents/cli-runner.js";
 import { getCliSessionId } from "../agents/cli-session.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
@@ -31,6 +35,7 @@ import {
   type ThinkLevel,
   type VerboseLevel,
 } from "../auto-reply/thinking.js";
+import { formatCliCommand } from "../cli/command-format.js";
 import { type CliDeps, createDefaultDeps } from "../cli/deps.js";
 import { loadConfig } from "../config/config.js";
 import {
@@ -45,14 +50,16 @@ import {
   registerAgentRunContext,
 } from "../infra/agent-events.js";
 import { getRemoteSkillEligibility } from "../infra/skills-remote.js";
+import { normalizeAgentId } from "../routing/session-key.js";
 import { defaultRuntime, type RuntimeEnv } from "../runtime.js";
 import { applyVerboseOverride } from "../sessions/level-overrides.js";
+import { applyModelOverrideToSessionEntry } from "../sessions/model-overrides.js";
 import { resolveSendPolicy } from "../sessions/send-policy.js";
 import { resolveMessageChannel } from "../utils/message-channel.js";
 import { deliverAgentCommandResult } from "./agent/delivery.js";
-import { resolveSession } from "./agent/session.js";
+import { resolveAgentRunContext } from "./agent/run-context.js";
 import { updateSessionStoreAfterAgentRun } from "./agent/session-store.js";
-import type { AgentCommandOpts } from "./agent/types.js";
+import { resolveSession } from "./agent/session.js";
 
 export async function agentCommand(
   opts: AgentCommandOpts,
@@ -60,14 +67,34 @@ export async function agentCommand(
   deps: CliDeps = createDefaultDeps(),
 ) {
   const body = (opts.message ?? "").trim();
-  if (!body) throw new Error("Message (--message) is required");
-  if (!opts.to && !opts.sessionId && !opts.sessionKey) {
-    throw new Error("Pass --to <E.164> or --session-id to choose a session");
+  if (!body) {
+    throw new Error("Message (--message) is required");
+  }
+  if (!opts.to && !opts.sessionId && !opts.sessionKey && !opts.agentId) {
+    throw new Error("Pass --to <E.164>, --session-id, or --agent to choose a session");
   }
 
   const cfg = loadConfig();
+  const agentIdOverrideRaw = opts.agentId?.trim();
+  const agentIdOverride = agentIdOverrideRaw ? normalizeAgentId(agentIdOverrideRaw) : undefined;
+  if (agentIdOverride) {
+    const knownAgents = listAgentIds(cfg);
+    if (!knownAgents.includes(agentIdOverride)) {
+      throw new Error(
+        `Unknown agent id "${agentIdOverrideRaw}". Use "${formatCliCommand("openclaw agents list")}" to see configured agents.`,
+      );
+    }
+  }
+  if (agentIdOverride && opts.sessionKey) {
+    const sessionAgentId = resolveAgentIdFromSessionKey(opts.sessionKey);
+    if (sessionAgentId !== agentIdOverride) {
+      throw new Error(
+        `Agent id "${agentIdOverrideRaw}" does not match session key agent "${sessionAgentId}".`,
+      );
+    }
+  }
   const agentCfg = cfg.agents?.defaults;
-  const sessionAgentId = resolveAgentIdFromSessionKey(opts.sessionKey?.trim());
+  const sessionAgentId = agentIdOverride ?? resolveAgentIdFromSessionKey(opts.sessionKey?.trim());
   const workspaceDirRaw = resolveAgentWorkspaceDir(cfg, sessionAgentId);
   const agentDir = resolveAgentDir(cfg, sessionAgentId);
   const workspace = await ensureAgentWorkspace({
@@ -114,6 +141,7 @@ export async function agentCommand(
     to: opts.to,
     sessionId: opts.sessionId,
     sessionKey: opts.sessionKey,
+    agentId: agentIdOverride,
   });
 
   const {
@@ -160,11 +188,13 @@ export async function agentCommand(
 
     const needsSkillsSnapshot = isNewSession || !sessionEntry?.skillsSnapshot;
     const skillsSnapshotVersion = getSkillsSnapshotVersion(workspaceDir);
+    const skillFilter = resolveAgentSkillsFilter(cfg, sessionAgentId);
     const skillsSnapshot = needsSkillsSnapshot
       ? buildWorkspaceSkillSnapshot(workspaceDir, {
           config: cfg,
           eligibility: { remote: getRemoteSkillEligibility() },
           snapshotVersion: skillsSnapshotVersion,
+          skillFilter,
         })
       : sessionEntry?.skillsSnapshot;
 
@@ -192,8 +222,7 @@ export async function agentCommand(
         sessionEntry ?? { sessionId, updatedAt: Date.now() };
       const next: SessionEntry = { ...entry, sessionId, updatedAt: Date.now() };
       if (thinkOverride) {
-        if (thinkOverride === "off") delete next.thinkingLevel;
-        else next.thinkingLevel = thinkOverride;
+        next.thinkingLevel = thinkOverride;
       }
       applyVerboseOverride(next, verboseOverride);
       sessionStore[sessionKey] = next;
@@ -260,13 +289,16 @@ export async function agentCommand(
           allowedModelKeys.size > 0 &&
           !allowedModelKeys.has(key)
         ) {
-          delete entry.providerOverride;
-          delete entry.modelOverride;
-          entry.updatedAt = Date.now();
-          sessionStore[sessionKey] = entry;
-          await updateSessionStore(storePath, (store) => {
-            store[sessionKey] = entry;
+          const { updated } = applyModelOverrideToSessionEntry({
+            entry,
+            selection: { provider: defaultProvider, model: defaultModel, isDefault: true },
           });
+          if (updated) {
+            sessionStore[sessionKey] = entry;
+            await updateSessionStore(storePath, (store) => {
+              store[sessionKey] = entry;
+            });
+          }
         }
       }
     }
@@ -292,14 +324,12 @@ export async function agentCommand(
         const store = ensureAuthProfileStore();
         const profile = store.profiles[authProfileId];
         if (!profile || profile.provider !== provider) {
-          delete entry.authProfileOverride;
-          delete entry.authProfileOverrideSource;
-          delete entry.authProfileOverrideCompactionCount;
-          entry.updatedAt = Date.now();
           if (sessionStore && sessionKey) {
-            sessionStore[sessionKey] = entry;
-            await updateSessionStore(storePath, (store) => {
-              store[sessionKey] = entry;
+            await clearSessionAuthProfileOverride({
+              sessionEntry: entry,
+              sessionStore,
+              sessionKey,
+              storePath,
             });
           }
         }
@@ -346,11 +376,17 @@ export async function agentCommand(
     let fallbackProvider = provider;
     let fallbackModel = model;
     try {
-      const messageChannel = resolveMessageChannel(opts.messageChannel, opts.channel);
+      const runContext = resolveAgentRunContext(opts);
+      const messageChannel = resolveMessageChannel(
+        runContext.messageChannel,
+        opts.replyChannel ?? opts.channel,
+      );
+      const spawnedBy = opts.spawnedBy ?? sessionEntry?.spawnedBy;
       const fallbackResult = await runWithModelFallback({
         cfg,
         provider,
         model,
+        agentDir,
         fallbacksOverride: resolveAgentModelFallbacksOverride(cfg, sessionAgentId),
         run: (providerOverride, modelOverride) => {
           if (isCliProvider(providerOverride, cfg)) {
@@ -358,6 +394,7 @@ export async function agentCommand(
             return runCliAgent({
               sessionId,
               sessionKey,
+              agentId: sessionAgentId,
               sessionFile,
               workspaceDir,
               config: cfg,
@@ -370,6 +407,7 @@ export async function agentCommand(
               extraSystemPrompt: opts.extraSystemPrompt,
               cliSessionId,
               images: opts.images,
+              streamParams: opts.streamParams,
             });
           }
           const authProfileId =
@@ -377,13 +415,27 @@ export async function agentCommand(
           return runEmbeddedPiAgent({
             sessionId,
             sessionKey,
+            agentId: sessionAgentId,
             messageChannel,
+            agentAccountId: runContext.accountId,
+            messageTo: opts.replyTo ?? opts.to,
+            messageThreadId: opts.threadId,
+            groupId: runContext.groupId,
+            groupChannel: runContext.groupChannel,
+            groupSpace: runContext.groupSpace,
+            spawnedBy,
+            currentChannelId: runContext.currentChannelId,
+            currentThreadTs: runContext.currentThreadTs,
+            replyToMode: runContext.replyToMode,
+            hasRepliedRef: runContext.hasRepliedRef,
+            senderIsOwner: true,
             sessionFile,
             workspaceDir,
             config: cfg,
             skillsSnapshot,
             prompt: body,
             images: opts.images,
+            clientTools: opts.clientTools,
             provider: providerOverride,
             model: modelOverride,
             authProfileId,
@@ -397,8 +449,10 @@ export async function agentCommand(
             lane: opts.lane,
             abortSignal: opts.abortSignal,
             extraSystemPrompt: opts.extraSystemPrompt,
+            streamParams: opts.streamParams,
             agentDir,
             onAgentEvent: (evt) => {
+              // Track lifecycle end for fallback emission below.
               if (
                 evt.stream === "lifecycle" &&
                 typeof evt.data?.phase === "string" &&
@@ -406,11 +460,6 @@ export async function agentCommand(
               ) {
                 lifecycleEnded = true;
               }
-              emitAgentEvent({
-                runId,
-                stream: evt.stream,
-                data: evt.data,
-              });
             },
           });
         },

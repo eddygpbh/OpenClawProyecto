@@ -1,26 +1,27 @@
 import type {
   ChannelOnboardingAdapter,
   ChannelOnboardingDmPolicy,
-  ClawdbotConfig,
+  OpenClawConfig,
   DmPolicy,
   WizardPrompter,
-} from "clawdbot/plugin-sdk";
+  MSTeamsTeamConfig,
+} from "openclaw/plugin-sdk";
 import {
   addWildcardAllowFrom,
   DEFAULT_ACCOUNT_ID,
   formatDocsLink,
   promptChannelAccessConfig,
-} from "clawdbot/plugin-sdk";
-
-import { resolveMSTeamsCredentials } from "./token.js";
+} from "openclaw/plugin-sdk";
 import {
   parseMSTeamsTeamEntry,
   resolveMSTeamsChannelAllowlist,
+  resolveMSTeamsUserAllowlist,
 } from "./resolve-allowlist.js";
+import { resolveMSTeamsCredentials } from "./token.js";
 
 const channel = "msteams" as const;
 
-function setMSTeamsDmPolicy(cfg: ClawdbotConfig, dmPolicy: DmPolicy) {
+function setMSTeamsDmPolicy(cfg: OpenClawConfig, dmPolicy: DmPolicy) {
   const allowFrom =
     dmPolicy === "open"
       ? addWildcardAllowFrom(cfg.channels?.msteams?.allowFrom)?.map((entry) => String(entry))
@@ -38,6 +39,95 @@ function setMSTeamsDmPolicy(cfg: ClawdbotConfig, dmPolicy: DmPolicy) {
   };
 }
 
+function setMSTeamsAllowFrom(cfg: OpenClawConfig, allowFrom: string[]): OpenClawConfig {
+  return {
+    ...cfg,
+    channels: {
+      ...cfg.channels,
+      msteams: {
+        ...cfg.channels?.msteams,
+        allowFrom,
+      },
+    },
+  };
+}
+
+function parseAllowFromInput(raw: string): string[] {
+  return raw
+    .split(/[\n,;]+/g)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function looksLikeGuid(value: string): boolean {
+  return /^[0-9a-fA-F-]{16,}$/.test(value);
+}
+
+async function promptMSTeamsAllowFrom(params: {
+  cfg: OpenClawConfig;
+  prompter: WizardPrompter;
+}): Promise<OpenClawConfig> {
+  const existing = params.cfg.channels?.msteams?.allowFrom ?? [];
+  await params.prompter.note(
+    [
+      "Allowlist MS Teams DMs by display name, UPN/email, or user id.",
+      "We resolve names to user IDs via Microsoft Graph when credentials allow.",
+      "Examples:",
+      "- alex@example.com",
+      "- Alex Johnson",
+      "- 00000000-0000-0000-0000-000000000000",
+    ].join("\n"),
+    "MS Teams allowlist",
+  );
+
+  while (true) {
+    const entry = await params.prompter.text({
+      message: "MS Teams allowFrom (usernames or ids)",
+      placeholder: "alex@example.com, Alex Johnson",
+      initialValue: existing[0] ? String(existing[0]) : undefined,
+      validate: (value) => (String(value ?? "").trim() ? undefined : "Required"),
+    });
+    const parts = parseAllowFromInput(String(entry));
+    if (parts.length === 0) {
+      await params.prompter.note("Enter at least one user.", "MS Teams allowlist");
+      continue;
+    }
+
+    const resolved = await resolveMSTeamsUserAllowlist({
+      cfg: params.cfg,
+      entries: parts,
+    }).catch(() => null);
+
+    if (!resolved) {
+      const ids = parts.filter((part) => looksLikeGuid(part));
+      if (ids.length !== parts.length) {
+        await params.prompter.note(
+          "Graph lookup unavailable. Use user IDs only.",
+          "MS Teams allowlist",
+        );
+        continue;
+      }
+      const unique = [
+        ...new Set([...existing.map((v) => String(v).trim()).filter(Boolean), ...ids]),
+      ];
+      return setMSTeamsAllowFrom(params.cfg, unique);
+    }
+
+    const unresolved = resolved.filter((item) => !item.resolved || !item.id);
+    if (unresolved.length > 0) {
+      await params.prompter.note(
+        `Could not resolve: ${unresolved.map((item) => item.input).join(", ")}`,
+        "MS Teams allowlist",
+      );
+      continue;
+    }
+
+    const ids = resolved.map((item) => item.id as string);
+    const unique = [...new Set([...existing.map((v) => String(v).trim()).filter(Boolean), ...ids])];
+    return setMSTeamsAllowFrom(params.cfg, unique);
+  }
+}
+
 async function noteMSTeamsCredentialHelp(prompter: WizardPrompter): Promise<void> {
   await prompter.note(
     [
@@ -52,9 +142,9 @@ async function noteMSTeamsCredentialHelp(prompter: WizardPrompter): Promise<void
 }
 
 function setMSTeamsGroupPolicy(
-  cfg: ClawdbotConfig,
+  cfg: OpenClawConfig,
   groupPolicy: "open" | "allowlist" | "disabled",
-): ClawdbotConfig {
+): OpenClawConfig {
   return {
     ...cfg,
     channels: {
@@ -69,17 +159,19 @@ function setMSTeamsGroupPolicy(
 }
 
 function setMSTeamsTeamsAllowlist(
-  cfg: ClawdbotConfig,
+  cfg: OpenClawConfig,
   entries: Array<{ teamKey: string; channelKey?: string }>,
-): ClawdbotConfig {
+): OpenClawConfig {
   const baseTeams = cfg.channels?.msteams?.teams ?? {};
   const teams: Record<string, { channels?: Record<string, unknown> }> = { ...baseTeams };
   for (const entry of entries) {
     const teamKey = entry.teamKey;
-    if (!teamKey) continue;
+    if (!teamKey) {
+      continue;
+    }
     const existing = teams[teamKey] ?? {};
     if (entry.channelKey) {
-      const channels = { ...(existing.channels ?? {}) };
+      const channels = { ...existing.channels };
       channels[entry.channelKey] = channels[entry.channelKey] ?? {};
       teams[teamKey] = { ...existing, channels };
     } else {
@@ -93,7 +185,7 @@ function setMSTeamsTeamsAllowlist(
       msteams: {
         ...cfg.channels?.msteams,
         enabled: true,
-        teams,
+        teams: teams as Record<string, MSTeamsTeamConfig>,
       },
     },
   };
@@ -106,6 +198,7 @@ const dmPolicy: ChannelOnboardingDmPolicy = {
   allowFromKey: "channels.msteams.allowFrom",
   getCurrent: (cfg) => cfg.channels?.msteams?.dmPolicy ?? "pairing",
   setPolicy: (cfg, policy) => setMSTeamsDmPolicy(cfg, policy),
+  promptAllowFrom: promptMSTeamsAllowFrom,
 };
 
 export const msteamsOnboardingAdapter: ChannelOnboardingAdapter = {
@@ -243,7 +336,9 @@ export const msteamsOnboardingAdapter: ChannelOnboardingAdapter = {
       ([teamKey, value]) => {
         const channels = value?.channels ?? {};
         const channelKeys = Object.keys(channels);
-        if (channelKeys.length === 0) return [teamKey];
+        if (channelKeys.length === 0) {
+          return [teamKey];
+        }
         return channelKeys.map((channelKey) => `${teamKey}/${channelKey}`);
       },
     );
@@ -286,9 +381,7 @@ export const msteamsOnboardingAdapter: ChannelOnboardingAdapter = {
               ...resolvedTeams.map((entry) => ({
                 teamKey: entry.teamId as string,
               })),
-              ...unresolved
-                .map((entry) => parseMSTeamsTeamEntry(entry))
-                .filter(Boolean),
+              ...unresolved.map((entry) => parseMSTeamsTeamEntry(entry)).filter(Boolean),
             ] as Array<{ teamKey: string; channelKey?: string }>;
 
             if (resolvedChannels.length > 0 || resolvedTeams.length > 0 || unresolved.length > 0) {

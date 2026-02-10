@@ -1,10 +1,12 @@
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import { dispatchChannelMessageAction } from "../../channels/plugins/message-actions.js";
 import type { ChannelId, ChannelThreadingToolContext } from "../../channels/plugins/types.js";
-import type { ClawdbotConfig } from "../../config/config.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import type { GatewayClientMode, GatewayClientName } from "../../utils/message-channel.js";
 import type { OutboundSendDeps } from "./deliver.js";
 import type { MessagePollResult, MessageSendResult } from "./message.js";
+import { dispatchChannelMessageAction } from "../../channels/plugins/message-actions.js";
+import { appendAssistantMessageToSessionTranscript } from "../../config/sessions.js";
+import { throwIfAborted } from "./abort.js";
 import { sendMessage, sendPoll } from "./message.js";
 
 export type OutboundGatewayContext = {
@@ -17,7 +19,7 @@ export type OutboundGatewayContext = {
 };
 
 export type OutboundSendContext = {
-  cfg: ClawdbotConfig;
+  cfg: OpenClawConfig;
   channel: ChannelId;
   params: Record<string, unknown>;
   accountId?: string | null;
@@ -28,11 +30,16 @@ export type OutboundSendContext = {
   mirror?: {
     sessionKey: string;
     agentId?: string;
+    text?: string;
+    mediaUrls?: string[];
   };
+  abortSignal?: AbortSignal;
 };
 
 function extractToolPayload(result: AgentToolResult<unknown>): unknown {
-  if (result.details !== undefined) return result.details;
+  if (result.details !== undefined) {
+    return result.details;
+  }
   const textBlock = Array.isArray(result.content)
     ? result.content.find(
         (block) =>
@@ -58,6 +65,7 @@ export async function executeSendAction(params: {
   to: string;
   message: string;
   mediaUrl?: string;
+  mediaUrls?: string[];
   gifPlayback?: boolean;
   bestEffort?: boolean;
 }): Promise<{
@@ -66,6 +74,7 @@ export async function executeSendAction(params: {
   toolResult?: AgentToolResult<unknown>;
   sendResult?: MessageSendResult;
 }> {
+  throwIfAborted(params.ctx.abortSignal);
   if (!params.ctx.dryRun) {
     const handled = await dispatchChannelMessageAction({
       channel: params.ctx.channel,
@@ -78,6 +87,19 @@ export async function executeSendAction(params: {
       dryRun: params.ctx.dryRun,
     });
     if (handled) {
+      if (params.ctx.mirror) {
+        const mirrorText = params.ctx.mirror.text ?? params.message;
+        const mirrorMediaUrls =
+          params.ctx.mirror.mediaUrls ??
+          params.mediaUrls ??
+          (params.mediaUrl ? [params.mediaUrl] : undefined);
+        await appendAssistantMessageToSessionTranscript({
+          agentId: params.ctx.mirror.agentId,
+          sessionKey: params.ctx.mirror.sessionKey,
+          text: mirrorText,
+          mediaUrls: mirrorMediaUrls,
+        });
+      }
       return {
         handledBy: "plugin",
         payload: extractToolPayload(handled),
@@ -86,11 +108,13 @@ export async function executeSendAction(params: {
     }
   }
 
+  throwIfAborted(params.ctx.abortSignal);
   const result: MessageSendResult = await sendMessage({
     cfg: params.ctx.cfg,
     to: params.to,
     content: params.message,
     mediaUrl: params.mediaUrl || undefined,
+    mediaUrls: params.mediaUrls,
     channel: params.ctx.channel || undefined,
     accountId: params.ctx.accountId ?? undefined,
     gifPlayback: params.gifPlayback,
@@ -99,6 +123,7 @@ export async function executeSendAction(params: {
     deps: params.ctx.deps,
     gateway: params.ctx.gateway,
     mirror: params.ctx.mirror,
+    abortSignal: params.ctx.abortSignal,
   });
 
   return {

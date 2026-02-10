@@ -10,6 +10,7 @@ export type ExecHostRequest = {
   needsScreenRecording?: boolean | null;
   agentId?: string | null;
   sessionKey?: string | null;
+  approvalDecision?: "allow-once" | "allow-always" | null;
 };
 
 export type ExecHostRunResult = {
@@ -38,14 +39,18 @@ export async function requestExecHostViaSocket(params: {
   timeoutMs?: number;
 }): Promise<ExecHostResponse | null> {
   const { socketPath, token, request } = params;
-  if (!socketPath || !token) return null;
+  if (!socketPath || !token) {
+    return null;
+  }
   const timeoutMs = params.timeoutMs ?? 20_000;
   return await new Promise((resolve) => {
     const client = new net.Socket();
     let settled = false;
     let buffer = "";
     const finish = (value: ExecHostResponse | null) => {
-      if (settled) return;
+      if (settled) {
+        return;
+      }
       settled = true;
       try {
         client.destroy();
@@ -84,9 +89,16 @@ export async function requestExecHostViaSocket(params: {
         const line = buffer.slice(0, idx).trim();
         buffer = buffer.slice(idx + 1);
         idx = buffer.indexOf("\n");
-        if (!line) continue;
+        if (!line) {
+          continue;
+        }
         try {
-          const msg = JSON.parse(line) as { type?: string; ok?: boolean; payload?: unknown; error?: unknown };
+          const msg = JSON.parse(line) as {
+            type?: string;
+            ok?: boolean;
+            payload?: unknown;
+            error?: unknown;
+          };
           if (msg?.type === "exec-res") {
             clearTimeout(timer);
             if (msg.ok === true && msg.payload) {

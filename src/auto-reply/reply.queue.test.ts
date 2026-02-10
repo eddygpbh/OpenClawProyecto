@@ -1,7 +1,5 @@
 import path from "node:path";
-
 import { afterEach, describe, expect, it, vi } from "vitest";
-
 import { pollUntil } from "../../test/helpers/poll.js";
 import { withTempHome as withTempHomeBase } from "../../test/helpers/temp-home.js";
 import {
@@ -36,7 +34,7 @@ async function withTempHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
       vi.mocked(runEmbeddedPiAgent).mockReset();
       return await fn(home);
     },
-    { prefix: "clawdbot-queue-" },
+    { prefix: "openclaw-queue-" },
   );
 }
 
@@ -45,7 +43,7 @@ function makeCfg(home: string, queue?: Record<string, unknown>) {
     agents: {
       defaults: {
         model: "anthropic/claude-opus-4-5",
-        workspace: path.join(home, "clawd"),
+        workspace: path.join(home, "openclaw"),
       },
     },
     channels: { whatsapp: { allowFrom: ["*"] } },
@@ -82,7 +80,7 @@ describe("queue followups", () => {
       });
 
       const first = await getReplyFromConfig(
-        { Body: "first", From: "+1001", To: "+2000" },
+        { Body: "first", From: "+1001", To: "+2000", MessageSid: "m-1" },
         {},
         cfg,
       );
@@ -105,7 +103,14 @@ describe("queue followups", () => {
       await Promise.resolve();
 
       expect(runEmbeddedPiAgent).toHaveBeenCalledTimes(2);
-      expect(prompts.some((p) => p.includes("[Queued messages while agent was busy]"))).toBe(true);
+      const queuedPrompt = prompts.find((p) =>
+        p.includes("[Queued messages while agent was busy]"),
+      );
+      expect(queuedPrompt).toBeTruthy();
+      // Message id hints are no longer exposed to the model prompt.
+      expect(queuedPrompt).toContain("Queued #1");
+      expect(queuedPrompt).toContain("first");
+      expect(queuedPrompt).not.toContain("[message_id:");
     });
   });
 

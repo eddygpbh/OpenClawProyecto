@@ -1,3 +1,8 @@
+import {
+  emptyPluginConfigSchema,
+  type OpenClawPluginApi,
+  type ProviderAuthContext,
+} from "openclaw/plugin-sdk";
 import { loginQwenPortalOAuth } from "./oauth.js";
 
 const PROVIDER_ID = "qwen-portal";
@@ -14,7 +19,11 @@ function normalizeBaseUrl(value: string | undefined): string {
   return withProtocol.endsWith("/v1") ? withProtocol : `${withProtocol.replace(/\/+$/, "")}/v1`;
 }
 
-function buildModelDefinition(params: { id: string; name: string; input: Array<"text" | "image"> }) {
+function buildModelDefinition(params: {
+  id: string;
+  name: string;
+  input: Array<"text" | "image">;
+}) {
   return {
     id: params.id,
     name: params.name,
@@ -30,7 +39,8 @@ const qwenPortalPlugin = {
   id: "qwen-portal-auth",
   name: "Qwen OAuth",
   description: "OAuth flow for Qwen (free-tier) models",
-  register(api) {
+  configSchema: emptyPluginConfigSchema(),
+  register(api: OpenClawPluginApi) {
     api.registerProvider({
       id: PROVIDER_ID,
       label: PROVIDER_LABEL,
@@ -42,7 +52,7 @@ const qwenPortalPlugin = {
           label: "Qwen OAuth",
           hint: "Device code login",
           kind: "device_code",
-          run: async (ctx) => {
+          run: async (ctx: ProviderAuthContext) => {
             const progress = ctx.prompter.progress("Starting Qwen OAuth…");
             try {
               const result = await loginQwenPortalOAuth({

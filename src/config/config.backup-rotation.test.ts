@@ -1,19 +1,17 @@
 import fs from "node:fs/promises";
-
 import { describe, expect, it } from "vitest";
-
+import type { OpenClawConfig } from "./types.js";
 import { withTempHome } from "./test-helpers.js";
-import type { ClawdbotConfig } from "./types.js";
 
 describe("config backup rotation", () => {
   it("keeps a 5-deep backup ring for config writes", async () => {
     await withTempHome(async () => {
       const { resolveConfigPath, writeConfigFile } = await import("./config.js");
       const configPath = resolveConfigPath();
-      const buildConfig = (version: number): ClawdbotConfig =>
+      const buildConfig = (version: number): OpenClawConfig =>
         ({
-          identity: { name: `v${version}` },
-        }) as ClawdbotConfig;
+          agents: { list: [{ id: `v${version}` }] },
+        }) as OpenClawConfig;
 
       for (let version = 0; version <= 6; version += 1) {
         await writeConfigFile(buildConfig(version));
@@ -21,7 +19,10 @@ describe("config backup rotation", () => {
 
       const readName = async (suffix = "") => {
         const raw = await fs.readFile(`${configPath}${suffix}`, "utf-8");
-        return (JSON.parse(raw) as { identity?: { name?: string } }).identity?.name ?? null;
+        return (
+          (JSON.parse(raw) as { agents?: { list?: Array<{ id?: string }> } }).agents?.list?.[0]
+            ?.id ?? null
+        );
       };
 
       await expect(readName()).resolves.toBe("v6");
